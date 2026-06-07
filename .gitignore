@@ -1,0 +1,21 @@
+# Credentials & secrets
+.env
+
+# Runtime artifacts
+logs/
+screenshots/
+*.log
+
+# Playwright
+.playwright/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# OS
+.DS_Store
