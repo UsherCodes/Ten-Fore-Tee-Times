@@ -55,6 +55,12 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
         "a:has-text('Book')", "a:has-text('Booking')", "[href*='booking']",
         "[href*='teetime']", "[href*='tee-time']",
     ],
+    # A dropdown/select used to pick the golf course. select_course() also tries
+    # clicking a tab/link/button whose text matches the course name.
+    "course_select": [
+        "select[name*='course' i]", "select[id*='course' i]",
+        "select[name*='club' i]", "[aria-label*='course' i]",
+    ],
     # A row/card representing a single bookable slot. Each match should contain
     # a time and a book button somewhere inside it.
     "slot_row": [
@@ -86,6 +92,7 @@ class Slot:
     time: dt.time
     label: str  # original text, e.g. "07:20 AM"
     handle_index: int  # index into the located slot rows
+    course: str | None = None  # which course this slot belongs to
 
 
 @dataclass
@@ -93,6 +100,7 @@ class BookingResult:
     success: bool
     booked_time: dt.time | None = None
     booked_label: str | None = None
+    booked_course: str | None = None
     in_preferred_window: bool = False
     screenshot_path: Path | None = None
     message: str = ""
@@ -311,8 +319,66 @@ class TenforeBooker:
         )
         return False
 
+    # ----------------------------------------------------------- course selection
+    async def select_course(self, course: str) -> bool:
+        """Select a golf course by name via a dropdown, tab, link, or button."""
+        assert self.page
+
+        # 1) A <select> course dropdown is the most reliable.
+        dropdown = await self._first_visible("course_select", timeout=2000)
+        if dropdown:
+            for kwargs in ({"label": course},
+                           {"value": course},
+                           {"label": _loose(course)}):
+                try:
+                    await dropdown.select_option(**kwargs)
+                    self.log.info("Selected course %r via dropdown.", course)
+                    await self.page.wait_for_load_state("networkidle", timeout=8000)
+                    return True
+                except Exception:
+                    continue
+
+        # 2) Click a tab/link/button/option whose visible text matches the name.
+        for sel in (f"[role='tab']:has-text('{course}')",
+                    f"a:has-text('{course}')",
+                    f"button:has-text('{course}')",
+                    f"li:has-text('{course}')",
+                    f"option:has-text('{course}')"):
+            try:
+                loc = self.page.locator(sel).first
+                await loc.wait_for(state="visible", timeout=1200)
+                await loc.click()
+                self.log.info("Selected course %r via %r", course, sel)
+                await self.page.wait_for_load_state("networkidle", timeout=8000)
+                return True
+            except Exception:
+                continue
+
+        self.log.warning(
+            "Could not explicitly select course %r — proceeding with whatever the "
+            "page currently shows. Add a 'course_select' override in config.yaml "
+            "if this course is being missed.", course
+        )
+        return False
+
+    async def gather_slots(self, courses: list[str | None]) -> list[Slot]:
+        """Select the date for each course in turn and collect all open slots.
+
+        Slots are tagged with their course and returned sorted by time; for
+        equal times the earlier-listed (more preferred) course wins, since the
+        sort is stable and courses are scanned in preference order.
+        """
+        combined: list[Slot] = []
+        for course in courses:
+            if course:
+                await self.select_course(course)
+            await self.select_date()
+            combined.extend(await self.collect_slots(course=course))
+        combined.sort(key=lambda s: s.time)
+        return combined
+
     # ------------------------------------------------------------- slot scraping
-    async def collect_slots(self) -> list[Slot]:
+    async def collect_slots(self, course: str | None = None) -> list[Slot]:
         """Scrape available tee times currently shown on the page."""
         assert self.page
         rows = None
@@ -347,25 +413,34 @@ class TenforeBooker:
             lowered = text.lower()
             if any(w in lowered for w in ("full", "unavailable", "booked", "sold out")):
                 continue
-            slots.append(Slot(time=t, label=_first_time_label(text), handle_index=i))
+            slots.append(Slot(time=t, label=_first_time_label(text),
+                              handle_index=i, course=course))
 
         slots.sort(key=lambda s: s.time)
-        self.log.info("Found %d available slot(s): %s",
-                      len(slots), ", ".join(s.label for s in slots[:12]) or "none")
+        where = f" at {course}" if course else ""
+        self.log.info("Found %d available slot(s)%s: %s",
+                      len(slots), where,
+                      ", ".join(s.label for s in slots[:12]) or "none")
         return slots
 
     def choose_slot(self, slots: list[Slot]) -> tuple[Slot | None, bool]:
-        """Pick the slot to book.
+        """Pick the slot to book, honouring the priority mode.
 
-        Returns (slot, in_preferred_window). Earliest slot inside the window
-        wins; otherwise the next-best (closest after window start) if fallback
-        is enabled.
+        Returns (slot, in_preferred_window).
+
+        - Earliest slot inside the preferred window always wins. With time
+          priority the candidates span every searched course, so this finds the
+          best time regardless of location.
+        - Otherwise the next-best slot is taken when allowed. Course priority
+          treats time as flexible, so it always falls back; time priority only
+          falls back when ``fallback_to_next_best`` is enabled.
         """
         in_window = [s for s in slots if self.config.window_contains(s.time)]
         if in_window:
             return in_window[0], True
 
-        if not self.config.fallback_to_next_best or not slots:
+        allow_fallback = self.config.priority == "course" or self.config.fallback_to_next_best
+        if not allow_fallback or not slots:
             return None, False
 
         # Next-best: prefer the earliest slot AFTER the window start; if none,
@@ -378,14 +453,31 @@ class TenforeBooker:
 
     # ----------------------------------------------------------------- booking
     async def book_slot(self, slot: Slot) -> bool:
-        """Click into a slot, set players, and confirm the reservation."""
+        """Click into a slot, set players, and confirm the reservation.
+
+        Re-selects the slot's course/date and re-resolves the row by time so the
+        booking is robust even when slots were gathered across several courses
+        (the page may currently be showing a different course).
+        """
         assert self.page
+        if slot.course:
+            await self.select_course(slot.course)
+        await self.select_date()
+
+        fresh = await self.collect_slots(course=slot.course)
+        match = next((s for s in fresh if s.time == slot.time), None)
+        if match is None:
+            self.log.warning("Slot %s%s no longer available at booking time.",
+                             slot.label, f" at {slot.course}" if slot.course else "")
+            return False
+
+        row = None
         for sel in self.selectors["slot_row"]:
             loc = self.page.locator(sel)
-            if await loc.count() > slot.handle_index:
-                row = loc.nth(slot.handle_index)
+            if await loc.count() > match.handle_index:
+                row = loc.nth(match.handle_index)
                 break
-        else:
+        if row is None:
             self.log.error("Slot row vanished before booking.")
             return False
 
@@ -467,3 +559,8 @@ def _first_time_label(text: str) -> str:
 
 def _to_minutes(t: dt.time) -> int:
     return t.hour * 60 + t.minute
+
+
+def _loose(name: str) -> str:
+    """A relaxed form of a course name for fuzzy <select> matching."""
+    return re.sub(r"\s+", " ", name).strip()

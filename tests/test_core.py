@@ -13,7 +13,20 @@ import pytest
 
 from tenfore import timeparse as tp
 from tenfore.booker import Slot, TenforeBooker, _extract_time
-from tenfore.config import BookingConfig
+from tenfore.config import BookingConfig, load_config
+
+_BASE_YAML = """
+booking:
+  desired_date: "2026-06-14"
+  time_window: {{start: "07:00", end: "09:00"}}
+  players: 3
+  courses: {courses}
+  priority: "{priority}"
+scheduling:
+  unlock_days_before: 8
+  unlock_time: "00:00"
+  timezone: "UTC"
+"""
 
 
 # --------------------------------------------------------------------- date parsing
@@ -76,7 +89,8 @@ def _config(**overrides) -> BookingConfig:
     base = dict(
         desired_date=dt.date(2026, 6, 14),
         window_start=dt.time(7, 0), window_end=dt.time(9, 0),
-        players=2, unlock_days_before=8, unlock_time=dt.time(0, 0),
+        players=2, courses=[], priority="time",
+        unlock_days_before=8, unlock_time=dt.time(0, 0),
         timezone=ZoneInfo("UTC"), prefire_seconds=60, poll_interval_seconds=1.5,
         login_attempts=10, login_delay_seconds=2, booking_window_minutes=5,
         fallback_to_next_best=True, headless=True, timeout_ms=30000,
@@ -116,6 +130,46 @@ def test_fallback_disabled_returns_none():
     assert slot is None and not in_window
 
 
+def test_course_priority_always_falls_back():
+    # Time is flexible under course priority -> book any time even with
+    # fallback_to_next_best disabled.
+    b = _booker(_config(priority="course", fallback_to_next_best=False))
+    slots = [Slot(dt.time(10, 0), "10:00", 0, course="Fox Hollow")]
+    slot, in_window = b.choose_slot(slots)
+    assert slot is not None and not in_window and slot.course == "Fox Hollow"
+
+
+def test_time_priority_earliest_across_courses_wins():
+    # With slots from two courses, the earliest in-window time wins regardless
+    # of course; ties already resolved by gather() ordering.
+    b = _booker(_config(priority="time"))
+    slots = [Slot(dt.time(7, 40), "7:40", 0, course="Eagle Ridge"),
+             Slot(dt.time(7, 10), "7:10", 1, course="Fox Hollow")]
+    slots.sort(key=lambda s: s.time)
+    slot, in_window = b.choose_slot(slots)
+    assert in_window and slot.time == dt.time(7, 10) and slot.course == "Fox Hollow"
+
+
+# --------------------------------------------------------------- courses_to_search
+def test_courses_to_search_course_priority_uses_primary():
+    cfg = _config(priority="course", courses=["Fox Hollow", "Eagle Ridge"])
+    assert cfg.primary_course == "Fox Hollow"
+    assert cfg.courses_to_search() == ["Fox Hollow"]
+    assert cfg.course_flexible is False
+
+
+def test_courses_to_search_time_priority_uses_all():
+    cfg = _config(priority="time", courses=["Fox Hollow", "Eagle Ridge"])
+    assert cfg.courses_to_search() == ["Fox Hollow", "Eagle Ridge"]
+    assert cfg.course_flexible is True
+
+
+def test_courses_to_search_empty_yields_single_none():
+    cfg = _config(priority="time", courses=[])
+    assert cfg.courses_to_search() == [None]
+    assert cfg.primary_course is None
+
+
 # --------------------------------------------------------------- unlock datetime math
 def test_unlock_datetime():
     cfg = _config(desired_date=dt.date(2026, 6, 14), unlock_days_before=8,
@@ -124,6 +178,31 @@ def test_unlock_datetime():
     assert unlock.date() == dt.date(2026, 6, 6)
     assert (unlock.hour, unlock.minute) == (0, 0)
     assert unlock.tzinfo is not None
+
+
+# ----------------------------------------------------------------- load_config
+def _write_yaml(tmp_path, courses="[]", priority="time"):
+    p = tmp_path / "config.yaml"
+    p.write_text(_BASE_YAML.format(courses=courses, priority=priority))
+    return p
+
+
+def test_load_config_reads_courses_and_priority(tmp_path):
+    cfg = load_config(_write_yaml(tmp_path, '["Fox Hollow", "Eagle Ridge"]', "course"))
+    assert cfg.courses == ["Fox Hollow", "Eagle Ridge"]
+    assert cfg.priority == "course"
+    assert cfg.players == 3
+
+
+def test_load_config_cli_overrides_courses_and_priority(tmp_path):
+    cfg = load_config(_write_yaml(tmp_path, '["Fox Hollow"]', "course"),
+                      overrides={"courses": ["A", "B"], "priority": "time"})
+    assert cfg.courses == ["A", "B"] and cfg.priority == "time"
+
+
+def test_load_config_rejects_bad_priority(tmp_path):
+    with pytest.raises(ValueError):
+        load_config(_write_yaml(tmp_path, "[]", "whatever"))
 
 
 if __name__ == "__main__":

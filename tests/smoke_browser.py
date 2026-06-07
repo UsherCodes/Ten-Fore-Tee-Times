@@ -50,6 +50,7 @@ def _config(tmp: Path) -> BookingConfig:
     return BookingConfig(
         desired_date=dt.date(2026, 6, 14),
         window_start=dt.time(7, 0), window_end=dt.time(9, 0), players=2,
+        courses=[], priority="time",
         unlock_days_before=8, unlock_time=dt.time(0, 0), timezone=ZoneInfo("UTC"),
         prefire_seconds=60, poll_interval_seconds=0.2, login_attempts=3,
         login_delay_seconds=0.2, booking_window_minutes=1, fallback_to_next_best=True,

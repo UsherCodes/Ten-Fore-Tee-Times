@@ -70,16 +70,27 @@ def _add_overrides(p: argparse.ArgumentParser) -> None:
     p.add_argument("--time-window", dest="time_window",
                    help="Override window (e.g. 'between 7:00 AM and 9:00 AM').")
     p.add_argument("--players", type=int, help="Override number of players (1-4).")
+    p.add_argument("--course", dest="courses",
+                   help="Course(s) to target, comma-separated for multiple "
+                        "(e.g. 'Fox Hollow,Eagle Ridge'). Overrides config.")
+    p.add_argument("--priority", choices=["course", "time"],
+                   help="'course' = lock the course, time flexible; "
+                        "'time' = lock the time window, location flexible.")
     p.add_argument("--timezone", help="Override IANA timezone.")
     p.add_argument("--prefire-seconds", dest="prefire_seconds", type=int,
                    help="Seconds before unlock to start polling.")
 
 
 def _overrides_from_args(args: argparse.Namespace) -> dict:
+    courses = getattr(args, "courses", None)
+    if courses:
+        courses = [c.strip() for c in courses.split(",") if c.strip()]
     return {
         "date": getattr(args, "date", None),
         "time_window": getattr(args, "time_window", None),
         "players": getattr(args, "players", None),
+        "courses": courses,
+        "priority": getattr(args, "priority", None),
         "timezone": getattr(args, "timezone", None),
         "prefire_seconds": getattr(args, "prefire_seconds", None),
         "headless": getattr(args, "headless", None),
@@ -93,6 +104,12 @@ def _print_info(config) -> None:
     table.add_row("Play date", config.desired_date.strftime("%A, %B %d, %Y"))
     table.add_row("Time window", f"{config.window_start:%H:%M} – {config.window_end:%H:%M}")
     table.add_row("Players", str(config.players))
+    if config.priority == "course":
+        table.add_row("Priority", f"COURSE — {config.primary_course or '(single course)'}"
+                                  " (time flexible)")
+    else:
+        scope = ", ".join(config.courses) if config.courses else "all courses"
+        table.add_row("Priority", f"TIME (location flexible) — searching {scope}")
     table.add_row("Timezone", str(config.timezone))
     table.add_row("Unlocks", config.unlock_datetime.strftime("%A, %B %d, %Y at %H:%M:%S %Z"))
     table.add_row("Poll starts", f"{config.prefire_seconds}s before unlock")

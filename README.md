@@ -17,6 +17,9 @@ you on the desktop.
 
 - **Interactive setup wizard** — answers a few questions, writes `config.yaml`
   and a gitignored `.env` (credentials never leave your machine).
+- **Course selection + priority modes** — pick which course(s) to play, then
+  choose whether to lock the **course** (time flexible) or lock the **time**
+  (location flexible, searches every listed course).
 - **Precision timer** — sleeps until ~60s before the window opens, then enters a
   1–2s rapid polling loop with a live countdown.
 - **Playwright (async) automation** — Chromium login → booking page → date
@@ -76,7 +79,8 @@ python main.py run --now --headful
 
 ### `run` / `info` override flags
 `--date "Saturday, June 14"` · `--time-window "between 7:00 AM and 9:00 AM"` ·
-`--players 2` · `--timezone America/New_York` · `--prefire-seconds 90`
+`--players 2` · `--course "Fox Hollow,Eagle Ridge"` · `--priority course|time` ·
+`--timezone America/New_York` · `--prefire-seconds 90`
 
 ### `run`-only flags
 `--now` (skip the wait) · `--headful` (show the browser)
@@ -90,6 +94,8 @@ booking:
   desired_date: "Saturday, June 14"      # natural phrasings accepted
   time_window: { start: "07:00", end: "09:00" }
   players: 4
+  courses: ["Fox Hollow", "Eagle Ridge"]  # ordered by preference; [] = single-course
+  priority: "course"                       # "course" or "time" (see below)
 scheduling:
   unlock_days_before: 8                  # window opens N days before play
   unlock_time: "00:00"                   # local time the window opens
@@ -115,6 +121,31 @@ site:
 **Sat Jun 6 at 00:00 America/New_York**, and polling starts at `23:59:00` the
 night before. Verify any time with `python main.py info`.
 
+### Courses & priority modes
+
+List the courses you'd play under `booking.courses`, most-preferred first, then
+pick what to optimise for with `booking.priority`:
+
+| `priority` | What's locked | What's flexible | Behaviour |
+| --- | --- | --- | --- |
+| `course` | the course (`courses[0]`) | the **time** | Books the best slot at your favourite course — preferring your window, but taking any available time if the window is full. |
+| `time` | your **time window** | the **course** | Scans *every* listed course and books the earliest slot inside your window, whichever course it's at. Ties go to the more-preferred course. |
+
+```bash
+# Lock onto Fox Hollow, take whatever time you can get:
+python main.py run --priority course --course "Fox Hollow"
+
+# I just want a 7–9am slot — book the earliest one at any of these courses:
+python main.py run --priority time --course "Fox Hollow,Eagle Ridge,Pine Valley"
+```
+
+For single-course platforms, leave `courses: []`; no course is selected and the
+tool just books on the one available sheet.
+
+Course selection in the browser tries a course dropdown first, then a matching
+tab/link/button by name — add a `course_select` override (below) if your club's
+control isn't matched.
+
 ### Tuning selectors
 
 Tenfore's DOM differs between clubs and changes over time, so every step tries
@@ -128,14 +159,15 @@ site:
   base_url: "https://www.fox.tenfore.golf"
   selectors:
     login_link:   ["a.member-login"]
+    course_select: ["select#course-picker"]
     slot_row:     ["div.tee-slot.is-open"]
     book_button:  ["button.reserve"]
     confirm_button: ["button#confirm-reservation"]
 ```
 
 Supported keys: `login_link`, `email_input`, `password_input`, `login_submit`,
-`logged_in_marker`, `booking_nav`, `slot_row`, `book_button`, `players_select`,
-`confirm_button`, `booking_closed_marker`.
+`logged_in_marker`, `booking_nav`, `course_select`, `slot_row`, `book_button`,
+`players_select`, `confirm_button`, `booking_closed_marker`.
 
 ---
 

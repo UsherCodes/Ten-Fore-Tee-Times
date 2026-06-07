@@ -20,6 +20,21 @@ booking:
   # Number of players in the group (1-4).
   players: 4
 
+  # Which golf course(s) to book on. Ordered by preference (first = favourite).
+  # Leave empty ([]) for single-course platforms.
+  courses:
+    - "Fox Hollow"
+    - "Eagle Ridge"
+
+  # What to optimise for:
+  #   course -> Lock onto your favourite course (courses[0]); TIME is flexible.
+  #             Books the best available slot at that one course, preferring
+  #             your window but taking any time if the window is full.
+  #   time   -> Lock onto your time window; LOCATION is flexible. Scans every
+  #             listed course and books the earliest slot inside your window,
+  #             whichever course it's at (ties go to the more-preferred course).
+  priority: "course"
+
 scheduling:
   # How many days before the play date the booking window unlocks.
   unlock_days_before: 8

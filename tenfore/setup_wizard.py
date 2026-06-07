@@ -66,6 +66,34 @@ def run_setup(console: Console,
                             default=int(booking.get("players", 4)))
     players = max(1, min(4, players))
 
+    # ---- Courses ----
+    default_courses = booking.get("courses", []) or []
+    raw_courses = Prompt.ask(
+        "[bold]Which course(s)?[/bold] Comma-separated, in order of preference "
+        "(blank = single-course site)",
+        default=", ".join(default_courses),
+    )
+    courses = [c.strip() for c in raw_courses.split(",") if c.strip()]
+    if courses:
+        console.print(f"  → {len(courses)} course(s): "
+                      f"[green]{', '.join(courses)}[/green]")
+
+    # ---- Priority ----
+    console.print(
+        "\n[bold]What matters more?[/bold]\n"
+        "  [cyan]1[/cyan]) The COURSE — get a tee time at "
+        f"[green]{courses[0] if courses else 'your course'}[/green], "
+        "time is flexible\n"
+        "  [cyan]2[/cyan]) The TIME — get a slot in your window, "
+        "location is flexible (search all courses)"
+    )
+    default_choice = "1" if str(booking.get("priority", "time")) == "course" else "2"
+    choice = Prompt.ask("Choose", choices=["1", "2"], default=default_choice)
+    priority = "course" if choice == "1" else "time"
+    if priority == "course" and not courses:
+        console.print("  [yellow]Course priority needs a course — none given, so "
+                      "this will just target the single-course site.[/yellow]")
+
     # ---- Scheduling ----
     unlock_days = IntPrompt.ask("[bold]Booking unlocks how many days before play?[/bold]",
                                 default=int(scheduling.get("unlock_days_before", 8)))
@@ -88,6 +116,8 @@ def run_setup(console: Console,
             "desired_date": raw_date,
             "time_window": {"start": f"{start:%H:%M}", "end": f"{end:%H:%M}"},
             "players": players,
+            "courses": courses,
+            "priority": priority,
         },
         "scheduling": {
             "unlock_days_before": unlock_days,

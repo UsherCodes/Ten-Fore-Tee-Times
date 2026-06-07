@@ -32,6 +32,13 @@ class BookingConfig:
     window_end: dt.time
     players: int
 
+    # Ordered list of courses to consider (first = most preferred). May be empty
+    # for single-course platforms, in which case no course is selected.
+    courses: list[str]
+    # "course" -> lock the course, time is flexible.
+    # "time"   -> lock the time window, course/location is flexible.
+    priority: str
+
     unlock_days_before: int
     unlock_time: dt.time
     timezone: ZoneInfo
@@ -71,6 +78,30 @@ class BookingConfig:
 
     def window_contains(self, t: dt.time) -> bool:
         return self.window_start <= t <= self.window_end
+
+    @property
+    def primary_course(self) -> str | None:
+        """The single most-preferred course, or None for single-course sites."""
+        return self.courses[0] if self.courses else None
+
+    @property
+    def course_flexible(self) -> bool:
+        """True when we'll search across multiple courses (time priority)."""
+        return self.priority == "time"
+
+    def courses_to_search(self) -> list[str | None]:
+        """Which courses to scan for slots, given the priority mode.
+
+        - course priority: just the primary course (time is flexible there).
+        - time priority:   every listed course (location is flexible).
+        Returns ``[None]`` when no courses are configured, so the booking flow
+        still runs once against a single-course platform.
+        """
+        if self.priority == "course":
+            target = [self.primary_course] if self.primary_course else []
+        else:
+            target = list(self.courses)
+        return target or [None]
 
 
 def load_credentials(env_path: Path = DEFAULT_ENV_PATH) -> Credentials:
@@ -130,6 +161,24 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
     if not 1 <= players <= 4:
         raise ValueError("players must be between 1 and 4.")
 
+    # --- courses & priority (with CLI overrides) ---
+    raw_courses = overrides.get("courses")
+    if raw_courses is None:
+        raw_courses = booking.get("courses", []) or []
+    if isinstance(raw_courses, str):
+        raw_courses = [raw_courses]
+    courses = [str(c).strip() for c in raw_courses if str(c).strip()]
+
+    priority = str(overrides.get("priority") or booking.get("priority", "time")).lower()
+    if priority not in ("course", "time"):
+        raise ValueError("priority must be 'course' (time flexible) or "
+                         "'time' (location flexible).")
+    if priority == "course" and not courses:
+        # Course-priority needs a course to lock onto; warn via ValueError only
+        # if the platform genuinely has courses. We allow empty for single-course
+        # sites, so just fall through — courses_to_search() handles [None].
+        pass
+
     unlock_time = timeparse.parse_time(str(scheduling.get("unlock_time", "00:00")))
 
     return BookingConfig(
@@ -137,6 +186,8 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         window_start=window_start,
         window_end=window_end,
         players=players,
+        courses=courses,
+        priority=priority,
         unlock_days_before=int(scheduling.get("unlock_days_before", 8)),
         unlock_time=unlock_time,
         timezone=tz,
