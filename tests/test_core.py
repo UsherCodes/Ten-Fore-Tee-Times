@@ -92,6 +92,7 @@ def _config(**overrides) -> BookingConfig:
         players=2, courses=[], priority="time",
         unlock_days_before=8, unlock_time=dt.time(0, 0),
         timezone=ZoneInfo("UTC"), prefire_seconds=60, poll_interval_seconds=1.5,
+        selection_budget_seconds=6,
         login_attempts=10, login_delay_seconds=2, booking_window_minutes=5,
         fallback_to_next_best=True, headless=True, timeout_ms=30000,
         macos_desktop=False, log_dir=Path("logs"), screenshot_dir=Path("screenshots"),

@@ -44,6 +44,9 @@ class BookingConfig:
     timezone: ZoneInfo
     prefire_seconds: int
     poll_interval_seconds: float
+    # Wall-clock cap (seconds) for finding the date/course control, so a missing
+    # or unmatched control can't burn polling time during the booking race.
+    selection_budget_seconds: float
 
     login_attempts: int
     login_delay_seconds: float
@@ -194,6 +197,7 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         prefire_seconds=int(overrides.get("prefire_seconds")
                             or scheduling.get("prefire_seconds", 60)),
         poll_interval_seconds=float(scheduling.get("poll_interval_seconds", 1.5)),
+        selection_budget_seconds=float(scheduling.get("selection_budget_seconds", 6)),
         login_attempts=int(retry.get("login_attempts", 10)),
         login_delay_seconds=float(retry.get("login_delay_seconds", 2)),
         booking_window_minutes=float(retry.get("booking_window_minutes", 5)),

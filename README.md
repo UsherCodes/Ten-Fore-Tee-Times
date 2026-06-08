@@ -102,6 +102,7 @@ scheduling:
   timezone: "America/New_York"           # IANA tz; blank = system local
   prefire_seconds: 60                    # start polling this early
   poll_interval_seconds: 1.5
+  selection_budget_seconds: 6            # cap on finding the date/course control
 retry:
   login_attempts: 10
   login_delay_seconds: 2

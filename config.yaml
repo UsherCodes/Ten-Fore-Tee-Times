@@ -54,6 +54,10 @@ scheduling:
   # Seconds between attempts during the rapid polling loop.
   poll_interval_seconds: 1.5
 
+  # Wall-clock cap for locating the date/course control on the page. Keeps a
+  # missing or unmatched control from wasting precious polling time mid-race.
+  selection_budget_seconds: 6
+
 retry:
   # Login retry attempts and the delay between them.
   login_attempts: 10

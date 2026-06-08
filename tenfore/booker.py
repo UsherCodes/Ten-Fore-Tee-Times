@@ -15,6 +15,7 @@ import asyncio
 import datetime as dt
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -283,11 +284,20 @@ class TenforeBooker:
         self.log.error("Booking page never became available within the window.")
         return False
 
+    def _budget_deadline(self) -> float:
+        """A monotonic deadline ``selection_budget_seconds`` from now."""
+        return time.monotonic() + self.config.selection_budget_seconds
+
     # ------------------------------------------------------------- date selection
     async def select_date(self) -> bool:
-        """Select the desired play date in whatever date control the page uses."""
+        """Select the desired play date in whatever date control the page uses.
+
+        Bounded by ``selection_budget_seconds`` so a missing/unmatched control
+        can't eat polling time during the booking race.
+        """
         assert self.page
         target = self.config.desired_date
+        deadline = self._budget_deadline()
         candidates = [
             target.strftime("%Y-%m-%d"),
             target.strftime("%d/%m/%Y"),
@@ -299,16 +309,18 @@ class TenforeBooker:
         ]
 
         # 1) A real <input type=date> is the most reliable.
-        try:
-            date_input = self.page.locator("input[type='date']").first
-            await date_input.wait_for(state="visible", timeout=2000)
-            await date_input.fill(target.strftime("%Y-%m-%d"))
-            await date_input.dispatch_event("change")
-            self.log.info("Selected date via date input: %s", target.isoformat())
-            await self.page.wait_for_load_state("networkidle", timeout=8000)
-            return True
-        except Exception:
-            pass
+        wait = _remaining_ms(deadline, cap=2000)
+        if wait:
+            try:
+                date_input = self.page.locator("input[type='date']").first
+                await date_input.wait_for(state="visible", timeout=wait)
+                await date_input.fill(target.strftime("%Y-%m-%d"))
+                await date_input.dispatch_event("change")
+                self.log.info("Selected date via date input: %s", target.isoformat())
+                await self.page.wait_for_load_state("networkidle", timeout=8000)
+                return True
+            except Exception:
+                pass
 
         # 2) Click a day cell / link matching one of the textual forms.
         for text in candidates:
@@ -316,9 +328,15 @@ class TenforeBooker:
                         f"a:has-text('{text}')",
                         f"button:has-text('{text}')",
                         f"td:has-text('{text}')"):
+                wait = _remaining_ms(deadline, cap=1000)
+                if not wait:
+                    self.log.warning(
+                        "Date-selection budget (%.0fs) exhausted before matching %s.",
+                        self.config.selection_budget_seconds, target.isoformat())
+                    return False
                 try:
                     loc = self.page.locator(sel).first
-                    await loc.wait_for(state="visible", timeout=1200)
+                    await loc.wait_for(state="visible", timeout=wait)
                     await loc.click()
                     self.log.info("Selected date via %r", sel)
                     await self.page.wait_for_load_state("networkidle", timeout=8000)
@@ -334,11 +352,16 @@ class TenforeBooker:
 
     # ----------------------------------------------------------- course selection
     async def select_course(self, course: str) -> bool:
-        """Select a golf course by name via a dropdown, tab, link, or button."""
+        """Select a golf course by name via a dropdown, tab, link, or button.
+
+        Bounded by ``selection_budget_seconds`` (see select_date).
+        """
         assert self.page
+        deadline = self._budget_deadline()
 
         # 1) A <select> course dropdown is the most reliable.
-        dropdown = await self._first_visible("course_select", timeout=2000)
+        wait = _remaining_ms(deadline, cap=2000)
+        dropdown = await self._first_visible("course_select", timeout=wait) if wait else None
         if dropdown:
             for kwargs in ({"label": course},
                            {"value": course},
@@ -357,9 +380,15 @@ class TenforeBooker:
                     f"button:has-text('{course}')",
                     f"li:has-text('{course}')",
                     f"option:has-text('{course}')"):
+            wait = _remaining_ms(deadline, cap=1000)
+            if not wait:
+                self.log.warning(
+                    "Course-selection budget (%.0fs) exhausted before matching %r.",
+                    self.config.selection_budget_seconds, course)
+                return False
             try:
                 loc = self.page.locator(sel).first
-                await loc.wait_for(state="visible", timeout=1200)
+                await loc.wait_for(state="visible", timeout=wait)
                 await loc.click()
                 self.log.info("Selected course %r via %r", course, sel)
                 await self.page.wait_for_load_state("networkidle", timeout=8000)
@@ -577,3 +606,11 @@ def _to_minutes(t: dt.time) -> int:
 def _loose(name: str) -> str:
     """A relaxed form of a course name for fuzzy <select> matching."""
     return re.sub(r"\s+", " ", name).strip()
+
+
+def _remaining_ms(deadline: float, *, cap: int) -> int:
+    """Milliseconds left until ``deadline`` (monotonic), clamped to [0, cap]."""
+    rem = (deadline - time.monotonic()) * 1000
+    if rem <= 0:
+        return 0
+    return int(min(cap, rem))
