@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,7 +126,19 @@ class TenforeBooker:
     # ----------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=self.config.headless)
+        # Escape hatches for locked-down machines / CI:
+        #   TENFORE_CHROMIUM_PATH -> use a specific Chromium/Chrome binary instead
+        #                            of Playwright's managed download.
+        #   TENFORE_NO_SANDBOX=1  -> launch with --no-sandbox (needed when running
+        #                            as root / inside some containers).
+        launch_kwargs: dict = {"headless": self.config.headless}
+        exe = os.getenv("TENFORE_CHROMIUM_PATH")
+        if exe:
+            launch_kwargs["executable_path"] = exe
+            self.log.info("Using Chromium binary from TENFORE_CHROMIUM_PATH: %s", exe)
+        if os.getenv("TENFORE_NO_SANDBOX") == "1":
+            launch_kwargs["args"] = ["--no-sandbox"]
+        self.browser = await self._pw.chromium.launch(**launch_kwargs)
         self.context = await self.browser.new_context(
             viewport={"width": 1440, "height": 900},
             user_agent=(

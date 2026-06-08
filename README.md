@@ -201,7 +201,7 @@ The dependency-light core logic (date/time parsing, slot selection, unlock math)
 is unit-tested without needing a browser:
 
 ```bash
-python -m pytest -q          # 24 tests
+python -m pytest -q          # 32 tests
 ```
 
 For an end-to-end browser smoke test against a local mock booking page (no real
@@ -210,6 +210,51 @@ network, no credentials), once Chromium is installed:
 ```bash
 python tests/smoke_browser.py
 ```
+
+This launches a real Chromium, scrapes the mock slots, books the earliest one in
+the window, and saves a confirmation screenshot — proving the full automation
+path (`collect_slots` → `choose_slot` → `book_slot` → `screenshot`) works.
+
+---
+
+## Running it for real: keeping the machine awake
+
+The booker must be running *at the unlock moment*. If the window opens at
+midnight, your computer can't be asleep. Keep it awake for the duration:
+
+```bash
+# macOS — prevent sleep while the booker runs (Ctrl-C to stop):
+caffeinate -s python main.py run
+
+# Linux — disable sleep/idle for the session, or run on an always-on box:
+systemd-inhibit --what=idle:sleep python main.py run
+```
+
+For a hands-off setup, run it on an always-on machine (a home server, a small
+cloud VM, a Raspberry Pi). Point it at a specific browser and disable the
+sandbox where needed with the env vars below.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `playwright install` can't download Chromium (locked-down network / proxy) | Install Chromium another way and set `TENFORE_CHROMIUM_PATH=/path/to/chrome`. The booker will launch that binary instead of a managed download. |
+| `Running as root without --no-sandbox` / browser won't launch in a container | Set `TENFORE_NO_SANDBOX=1` to launch with `--no-sandbox`. |
+| "Could not locate login form fields" / "Could not explicitly select date/course" | The club's DOM doesn't match the default selectors — run with `--headful` to watch, then add overrides under `site.selectors:` (see *Tuning selectors*). |
+| Booking page never opens | The window genuinely hasn't unlocked, or `unlock_time`/`timezone` are wrong. Verify with `python main.py info`; widen `retry.booking_window_minutes` if needed. |
+| Nothing books though slots exist | Your window may be full and `fallback_to_next_best` is off, or `priority: course` is locked to a course with no openings. Check `logs/tenfore.log`. |
+| No desktop notification on macOS | First run prompts for permission; ensure Terminal/your runner is allowed under System Settings → Notifications. The tool still works without it. |
+
+Every run appends timestamped detail to `logs/tenfore.log` — start there.
+
+### Browser environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `TENFORE_CHROMIUM_PATH` | Absolute path to a Chromium/Chrome binary to launch instead of Playwright's managed one. |
+| `TENFORE_NO_SANDBOX=1` | Launch Chromium with `--no-sandbox` (needed as root / in some containers). |
 
 ---
 
