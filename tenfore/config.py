@@ -62,6 +62,9 @@ class BookingConfig:
     screenshot_dir: Path
     base_url: str
 
+    # Runtime-only: when True, do everything except click the final confirm.
+    dry_run: bool = False
+
     raw: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -208,6 +211,7 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         log_dir=Path(paths.get("log_dir", "logs")),
         screenshot_dir=Path(paths.get("screenshot_dir", "screenshots")),
         base_url=str(site.get("base_url", "https://www.fox.tenfore.golf")).rstrip("/"),
+        dry_run=bool(overrides.get("dry_run", False)),
         raw=raw,
     )
 

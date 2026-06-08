@@ -242,14 +242,16 @@ class TenforeBooker:
         return False
 
     # ------------------------------------------------------ booking page access
-    async def open_booking_page(self) -> bool:
+    async def open_booking_page(self, minutes: float | None = None) -> bool:
         """Navigate to the tee-time booking page.
 
-        Retries until the booking window opens or ``booking_window_minutes``
-        elapses (handles the "too early / not open yet" case).
+        Retries until the booking window opens or ``minutes`` elapses (defaults
+        to ``booking_window_minutes``; ``check`` passes a short value for a quick
+        look). Handles the "too early / not open yet" case.
         """
         assert self.page
-        deadline = self.config.now() + dt.timedelta(minutes=self.config.booking_window_minutes)
+        window = self.config.booking_window_minutes if minutes is None else minutes
+        deadline = self.config.now() + dt.timedelta(minutes=window)
         attempt = 0
         while self.config.now() < deadline:
             attempt += 1
@@ -500,6 +502,10 @@ class TenforeBooker:
         Re-selects the slot's course/date and re-resolves the row by time so the
         booking is robust even when slots were gathered across several courses
         (the page may currently be showing a different course).
+
+        When ``config.dry_run`` is set, every step runs up to (but not including)
+        the final confirm click — so it validates the whole path without making
+        a real reservation.
         """
         assert self.page
         if slot.course:
@@ -546,6 +552,13 @@ class TenforeBooker:
         if not confirm:
             self.log.error("Could not find a confirm/book button.")
             return False
+
+        if self.config.dry_run:
+            self.log.info("DRY RUN — confirm button located but NOT clicked. "
+                          "No reservation was made for %s%s.",
+                          slot.label, f" at {slot.course}" if slot.course else "")
+            return True
+
         await confirm.click()
 
         try:

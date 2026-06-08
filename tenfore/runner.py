@@ -133,12 +133,17 @@ async def run_booking(config: BookingConfig,
             window_note = ("within your preferred window" if in_window
                            else "next-best slot")
             where = f" at {slot.course}" if slot.course else ""
+            verb = "Would have booked" if config.dry_run else "Booked"
             result.message = (
-                f"Booked {slot.label}{where} for {config.players} player(s) on "
+                f"{verb} {slot.label}{where} for {config.players} player(s) on "
                 f"{config.desired_date.strftime('%A, %B %d, %Y')} — {window_note}."
+                + ("\nDRY RUN — no reservation was actually made."
+                   if config.dry_run else "")
                 + (f"\nScreenshot: {shot}" if shot else "")
             )
-            notifier.success("Tee Time Booked!", result.message)
+            notifier.success(
+                "Dry Run OK (not booked)" if config.dry_run else "Tee Time Booked!",
+                result.message)
         else:
             result.message = ("Could not confirm a booking after several attempts. "
                               "Check the screenshot and your Tenfore account.")
@@ -163,3 +168,84 @@ async def _safe_shot(booker: TenforeBooker, name: str, result: BookingResult):
         return path
     except Exception:
         return None
+
+
+async def run_check(config: BookingConfig,
+                    credentials: Credentials,
+                    console: Console) -> bool:
+    """Dry validation of the whole path WITHOUT booking anything.
+
+    Logs in, opens the booking page, and for each target course selects the
+    course + date and counts the slots it can see — so you can confirm the
+    selectors work against the real site any day, not just at unlock time.
+    Returns True if every checkpoint passed.
+    """
+    from rich.table import Table  # local import keeps module load light
+
+    log = get_logger()
+    booker = TenforeBooker(config, credentials)
+    rows: list[tuple[str, bool, str]] = []
+
+    def record(step: str, ok: bool, detail: str = "") -> None:
+        rows.append((step, ok, detail))
+        log.info("CHECK %-22s %s %s", step, "OK" if ok else "FAIL", detail)
+
+    all_ok = True
+    try:
+        await booker.start()
+
+        login_ok = await booker.login()
+        record("Login", login_ok,
+               "" if login_ok else "check credentials / 'login_*' selectors")
+        all_ok &= login_ok
+
+        if login_ok:
+            page_ok = await booker.open_booking_page(minutes=0.5)
+            record("Booking page", page_ok,
+                   "" if page_ok else "not open yet, or 'booking_nav' selector")
+            all_ok &= page_ok
+
+            if page_ok:
+                for course in config.courses_to_search():
+                    label = course or "(single course)"
+                    if course:
+                        c_ok = await booker.select_course(course)
+                        record(f"Select course: {label}", c_ok,
+                               "" if c_ok else "add a 'course_select' override")
+                        all_ok &= c_ok
+                    d_ok = await booker.select_date()
+                    record(f"Select date @ {label}", d_ok,
+                           "" if d_ok else "page may already default to it")
+                    slots = await booker.collect_slots(course=course)
+                    in_win = [s for s in slots if config.window_contains(s.time)]
+                    slot_ok = len(slots) > 0
+                    detail = (f"{len(slots)} slot(s), {len(in_win)} in window"
+                              + (f" — e.g. {', '.join(s.label for s in slots[:5])}"
+                                 if slots else " — check 'slot_row' selector"))
+                    record(f"Slots @ {label}", slot_ok, detail)
+                    all_ok &= slot_ok
+
+        shot = await booker.screenshot("check")
+        log.info("Saved check screenshot -> %s", shot)
+    except Exception as exc:
+        log.exception("Check run errored.")
+        record("Unexpected error", False, str(exc))
+        all_ok = False
+    finally:
+        await booker.close()
+
+    table = Table(title="Tenfore Booker — Pre-flight Check", show_lines=False)
+    table.add_column("Step", style="bold")
+    table.add_column("Result", justify="center")
+    table.add_column("Detail", overflow="fold")
+    for step, ok, detail in rows:
+        table.add_row(step, "[green]✓[/green]" if ok else "[red]✗[/red]", detail)
+    console.print(table)
+    console.print(
+        f"[bold green]All checks passed — you're ready to arm `run`.[/bold green]"
+        if all_ok else
+        "[bold yellow]Some checks failed.[/bold yellow] Re-run with [cyan]--headful[/cyan] "
+        "to watch, and add selector overrides under [cyan]site.selectors[/cyan] "
+        "in config.yaml (see the README)."
+    )
+    return all_ok

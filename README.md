@@ -53,7 +53,10 @@ python main.py setup
 # 2. Sanity-check the resolved settings & unlock moment
 python main.py info
 
-# 3. Arm it — it waits for the window, then books. Leave it running.
+# 3. Validate login + selectors against the real site, WITHOUT booking
+python main.py check --headful
+
+# 4. Arm it — it waits for the window, then books. Leave it running.
 python main.py run
 ```
 
@@ -72,18 +75,36 @@ python main.py run --now --headful
 | --- | --- |
 | `setup` | Interactive wizard → `config.yaml` + `.env`. |
 | `info`  | Print resolved config and the exact next unlock datetime. |
+| `check` | Log in and validate selectors/slots **without booking** — run it any day to confirm everything works before the unlock moment. |
 | `run`   | Wait for the window, then log in and book. |
 
 ### Global flags
 `--config PATH` · `--env PATH` · `-v/--verbose` · `--version`
 
-### `run` / `info` override flags
+### `run` / `check` / `info` override flags
 `--date "Saturday, June 14"` · `--time-window "between 7:00 AM and 9:00 AM"` ·
 `--players 2` · `--course "Fox Hollow,Eagle Ridge"` · `--priority course|time` ·
 `--timezone America/New_York` · `--prefire-seconds 90`
 
 ### `run`-only flags
-`--now` (skip the wait) · `--headful` (show the browser)
+`--now` (skip the wait) · `--dry-run` (do everything except the final confirm) ·
+`--headful` (show the browser)
+
+### Validating before the big day
+
+```bash
+# Confirm login + selectors + visible slots work, right now, without booking:
+python main.py check --headful
+
+# A full rehearsal at the real moment that stops short of confirming:
+python main.py run --dry-run --headful
+```
+
+`check` prints a pass/fail table for each step (login → booking page → course →
+date → slots) with the slot counts it found, so you know exactly which selector
+to override if something misses. `--dry-run` exercises the entire booking path —
+slot selection, players, locating the confirm button — but never clicks confirm,
+so no reservation is made.
 
 ---
 

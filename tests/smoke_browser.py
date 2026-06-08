@@ -46,7 +46,7 @@ document.querySelectorAll('.book-btn').forEach(b => b.onclick = () => {
 </script></body></html>"""
 
 
-def _config(tmp: Path) -> BookingConfig:
+def _config(tmp: Path, *, dry_run: bool = False) -> BookingConfig:
     return BookingConfig(
         desired_date=dt.date(2026, 6, 14),
         window_start=dt.time(7, 0), window_end=dt.time(9, 0), players=2,
@@ -57,7 +57,7 @@ def _config(tmp: Path) -> BookingConfig:
         login_delay_seconds=0.2, booking_window_minutes=1, fallback_to_next_best=True,
         headless=True, timeout_ms=10000, macos_desktop=False,
         log_dir=tmp / "logs", screenshot_dir=tmp / "shots",
-        base_url="https://example.invalid", raw={},
+        base_url="https://example.invalid", dry_run=dry_run, raw={},
     )
 
 
@@ -69,8 +69,24 @@ async def main() -> int:
     page_file = tmp / "booking.html"
     page_file.write_text(MOCK_PAGE, encoding="utf-8")
 
-    cfg = _config(tmp)
-    booker = TenforeBooker(cfg, Credentials("a@b.com", "pw"))
+    # --- Part 1: DRY RUN — must NOT actually confirm ---
+    dry = TenforeBooker(_config(tmp, dry_run=True), Credentials("a@b.com", "pw"))
+    try:
+        await dry.start()
+        await dry.page.goto(page_file.as_uri())
+        slot, _ = dry.choose_slot(await dry.collect_slots())
+        assert await dry.book_slot(slot), "dry-run book_slot should report success"
+        body = (await dry.page.inner_text("body")).lower()
+        assert "confirmed" not in body, "DRY RUN must not reach the confirmation!"
+        console.print("[green]✓ dry-run validated path without confirming[/green]")
+    except AssertionError as exc:
+        console.print(f"[bold red]SMOKE TEST FAILED (dry run):[/bold red] {exc}")
+        return 1
+    finally:
+        await dry.close()
+
+    # --- Part 2: real booking against a fresh page load ---
+    booker = TenforeBooker(_config(tmp), Credentials("a@b.com", "pw"))
     try:
         await booker.start()
         await booker.page.goto(page_file.as_uri())
@@ -84,6 +100,8 @@ async def main() -> int:
 
         booked = await booker.book_slot(slot)
         assert booked, "book_slot should report success"
+        body = (await booker.page.inner_text("body")).lower()
+        assert "confirmed" in body, "real booking should reach confirmation"
 
         shot = await booker.screenshot("smoke")
         assert shot.exists()

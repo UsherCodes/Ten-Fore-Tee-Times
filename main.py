@@ -28,7 +28,7 @@ from tenfore.config import (
     load_credentials,
 )
 from tenfore.logsetup import setup_logging
-from tenfore.runner import run_booking
+from tenfore.runner import run_booking, run_check
 from tenfore.setup_wizard import run_setup
 
 console = Console()
@@ -55,8 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_overrides(run_p)
     run_p.add_argument("--now", action="store_true",
                        help="Skip the wait/countdown and try to book immediately.")
+    run_p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                       help="Do everything except click the final confirm "
+                            "(no real reservation).")
     run_p.add_argument("--headful", dest="headless", action="store_false", default=None,
                        help="Show the browser window (for debugging).")
+
+    check_p = sub.add_parser(
+        "check", help="Log in and validate selectors/slots WITHOUT booking.")
+    _add_overrides(check_p)
+    check_p.add_argument("--headful", dest="headless", action="store_false", default=None,
+                         help="Show the browser window (for debugging).")
 
     info_p = sub.add_parser("info", help="Show resolved config and unlock time.")
     _add_overrides(info_p)
@@ -94,6 +103,7 @@ def _overrides_from_args(args: argparse.Namespace) -> dict:
         "timezone": getattr(args, "timezone", None),
         "prefire_seconds": getattr(args, "prefire_seconds", None),
         "headless": getattr(args, "headless", None),
+        "dry_run": getattr(args, "dry_run", None),
     }
 
 
@@ -147,6 +157,24 @@ def main(argv: list[str] | None = None) -> int:
         _print_info(config)
         return 0
 
+    if args.command == "check":
+        try:
+            credentials = load_credentials(args.env)
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            return 2
+        console.print(Panel.fit(
+            "Pre-flight check — logging in and inspecting the booking page. "
+            "[bold]No reservation will be made.[/bold]",
+            title="🔎  Tenfore Booker — Check", border_style="cyan",
+        ))
+        try:
+            ok = asyncio.run(run_check(config, credentials, console))
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Aborted by user.[/yellow]")
+            return 130
+        return 0 if ok else 1
+
     if args.command == "run":
         try:
             credentials = load_credentials(args.env)
@@ -154,10 +182,11 @@ def main(argv: list[str] | None = None) -> int:
             console.print(f"[red]{exc}[/red]")
             return 2
 
+        mode = "  [yellow](DRY RUN — won't confirm)[/yellow]" if config.dry_run else ""
         console.print(Panel.fit(
             f"[bold]Target:[/bold] {config.desired_date.strftime('%A, %B %d, %Y')}  "
             f"[bold]Window:[/bold] {config.window_start:%H:%M}–{config.window_end:%H:%M}  "
-            f"[bold]Players:[/bold] {config.players}",
+            f"[bold]Players:[/bold] {config.players}{mode}",
             title="🏌️  Tenfore Tee-Time Booker", border_style="green",
         ))
 
