@@ -1,0 +1,90 @@
+# Tenfore tee-time auto-booking configuration.
+#
+# Every value here can be overridden at runtime with a CLI flag, e.g.:
+#   python main.py run --date "Saturday, June 14" --players 2
+#
+# Run `python main.py setup` for an interactive wizard that writes this file
+# (and your .env credentials) for you.
+
+booking:
+  # The date you want to PLAY golf. Accepts natural phrasings like
+  # "Saturday, June 14", "2026-06-14", "June 14", "next Saturday".
+  desired_date: "Saturday, June 14"
+
+  # Preferred tee-time window. Earliest available slot inside the window wins.
+  # 24h or 12h clock both accepted on the CLI / wizard.
+  time_window:
+    start: "07:00"   # 7:00 AM
+    end: "09:00"     # 9:00 AM
+
+  # Number of players in the group (1-4).
+  players: 4
+
+  # Which golf course(s) to book on. Ordered by preference (first = favourite).
+  # Leave empty ([]) for single-course platforms.
+  courses:
+    - "Fox Hollow"
+    - "Eagle Ridge"
+
+  # What to optimise for:
+  #   course -> Lock onto your favourite course (courses[0]); TIME is flexible.
+  #             Books the best available slot at that one course, preferring
+  #             your window but taking any time if the window is full.
+  #   time   -> Lock onto your time window; LOCATION is flexible. Scans every
+  #             listed course and books the earliest slot inside your window,
+  #             whichever course it's at (ties go to the more-preferred course).
+  priority: "course"
+
+scheduling:
+  # How many days before the play date the booking window unlocks.
+  unlock_days_before: 8
+
+  # Local time-of-day the booking window opens on the unlock day (24h clock).
+  # Many courses open at midnight; some at 06:00, 07:00, etc. Adjust to match.
+  unlock_time: "00:00"
+
+  # IANA timezone used to interpret all dates/times above. The booking unlock
+  # moment is computed in this zone. Leave blank to use the machine's local tz.
+  timezone: "America/New_York"
+
+  # Start the rapid polling loop this many seconds BEFORE the unlock moment,
+  # so we are hammering the booking page the instant it opens.
+  prefire_seconds: 60
+
+  # Seconds between attempts during the rapid polling loop.
+  poll_interval_seconds: 1.5
+
+  # Wall-clock cap for locating the date/course control on the page. Keeps a
+  # missing or unmatched control from wasting precious polling time mid-race.
+  selection_budget_seconds: 6
+
+retry:
+  # Login retry attempts and the delay between them.
+  login_attempts: 10
+  login_delay_seconds: 2
+
+  # Max total minutes to keep retrying the booking page after the unlock
+  # moment before giving up (handles "page not open yet" + transient errors).
+  booking_window_minutes: 5
+
+  # If every slot in the preferred window is gone, book the next-best
+  # available time anyway and alert the user.
+  fallback_to_next_best: true
+
+browser:
+  # Run Chromium without a visible window. Set false to watch it work / debug.
+  headless: true
+  # Per-action navigation/selector timeout in milliseconds.
+  timeout_ms: 30000
+
+notifications:
+  # Send a macOS desktop notification via osascript on success/failure.
+  # Ignored (gracefully) on non-macOS platforms.
+  macos_desktop: true
+
+paths:
+  log_dir: "logs"
+  screenshot_dir: "screenshots"
+
+site:
+  base_url: "https://www.fox.tenfore.golf"
