@@ -2,3 +2,6 @@ playwright>=1.44.0
 python-dotenv>=1.0.0
 PyYAML>=6.0.1
 rich>=13.7.0
+
+# dev / test
+pytest>=7.0

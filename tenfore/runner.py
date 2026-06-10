@@ -86,9 +86,13 @@ async def run_booking(config: BookingConfig,
         booked = False
         slot = None
         in_window = False
-        for _ in range(min(5, len(candidates) + 1)):
+        attempted = 0
+        for _ in range(min(5, len(candidates))):
             slot, in_window = booker.choose_slot(candidates)
             if slot is None:
+                # Nothing acceptable on the very first pass means the window is
+                # full and fallback is off. (If we'd already booked-attempted a
+                # slot, we'd have left the loop via the exhausted path below.)
                 result.message = (
                     "All slots in your preferred window are taken and fallback "
                     "booking is disabled."
@@ -114,12 +118,24 @@ async def run_booking(config: BookingConfig,
             at = f" at {slot.course}" if slot.course else ""
             log.info("Attempting to book %s%s (%d players).",
                      slot.label, at, config.players)
+            attempted += 1
             if await booker.book_slot(slot):
                 booked = True
                 break
             log.warning("Could not secure %s%s — trying the next-best slot.",
                         slot.label, at)
             candidates.remove(slot)
+
+        # Exhausted the attempt budget / candidate list without booking.
+        if not booked and attempted:
+            result.message = (
+                f"Tried {attempted} slot(s) but none could be confirmed — they may "
+                f"be selling out faster than we can book, or the confirm step isn't "
+                f"matching. Check logs/tenfore.log and the screenshot."
+            )
+            notifier.failure("Could Not Secure a Slot", result.message)
+            await _safe_shot(booker, "exhausted", result)
+            return result
 
         shot = await _safe_shot(booker, "booking", result)
         result.booked_time = slot.time if slot else None
@@ -200,7 +216,7 @@ async def run_check(config: BookingConfig,
         all_ok &= login_ok
 
         if login_ok:
-            page_ok = await booker.open_booking_page(minutes=0.5)
+            page_ok = await booker.open_booking_page(minutes=1.5)
             record("Booking page", page_ok,
                    "" if page_ok else "not open yet, or 'booking_nav' selector")
             all_ok &= page_ok

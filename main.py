@@ -75,7 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_overrides(p: argparse.ArgumentParser) -> None:
     """CLI flags that override config.yaml at runtime."""
-    p.add_argument("--date", help="Override desired play date (e.g. 'Saturday, June 14').")
+    p.add_argument("--date", help="Override desired play date (e.g. 'next Saturday' "
+                                  "or '2026-06-14'). A named weekday must match the date.")
     p.add_argument("--time-window", dest="time_window",
                    help="Override window (e.g. 'between 7:00 AM and 9:00 AM').")
     p.add_argument("--players", type=int, help="Override number of players (1-4).")
@@ -125,7 +126,11 @@ def _print_info(config) -> None:
     table.add_row("Poll starts", f"{config.prefire_seconds}s before unlock")
     table.add_row("Now", config.now().strftime("%Y-%m-%d %H:%M:%S %Z"))
     remaining = config.unlock_datetime - config.now()
-    table.add_row("Time to unlock", str(remaining).split(".")[0])
+    if remaining.total_seconds() >= 0:
+        table.add_row("Time to unlock", str(remaining).split(".")[0])
+    else:
+        table.add_row("Time to unlock",
+                      f"[yellow]already unlocked {str(-remaining).split('.')[0]} ago[/yellow]")
     table.add_row("Login retries", f"{config.login_attempts} × {config.login_delay_seconds}s")
     table.add_row("Fallback booking", "on" if config.fallback_to_next_best else "off")
     table.add_row("Headless", "yes" if config.headless else "no")

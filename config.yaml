@@ -1,15 +1,16 @@
 # Tenfore tee-time auto-booking configuration.
 #
 # Every value here can be overridden at runtime with a CLI flag, e.g.:
-#   python main.py run --date "Saturday, June 14" --players 2
+#   python main.py run --date "next Saturday" --players 2
 #
 # Run `python main.py setup` for an interactive wizard that writes this file
 # (and your .env credentials) for you.
 
 booking:
   # The date you want to PLAY golf. Accepts natural phrasings like
-  # "Saturday, June 14", "2026-06-14", "June 14", "next Saturday".
-  desired_date: "Saturday, June 14"
+  # "Sunday, June 14", "2026-06-14", "June 14", "next Saturday". If you name a
+  # weekday it must match the date, otherwise parsing errors (catches typos).
+  desired_date: "Sunday, June 14"
 
   # Preferred tee-time window. Earliest available slot inside the window wins.
   # 24h or 12h clock both accepted on the CLI / wizard.

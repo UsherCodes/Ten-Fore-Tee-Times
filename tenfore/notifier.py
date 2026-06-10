@@ -46,8 +46,11 @@ class Notifier:
             return
         if platform.system() != "Darwin" or not shutil.which("osascript"):
             return
-        safe_msg = message.replace('"', "'").replace("\n", " ")
-        safe_title = title.replace('"', "'")
+        # Escape backslashes first (so we don't double-escape), then quotes/newlines.
+        def _osa_safe(s: str) -> str:
+            return s.replace("\\", "\\\\").replace('"', "'").replace("\n", " ")
+        safe_msg = _osa_safe(message)
+        safe_title = _osa_safe(title)
         script = f'display notification "{safe_msg}" with title "Tenfore Booker — {safe_title}"'
         if sound:
             script += f' sound name "{sound}"'

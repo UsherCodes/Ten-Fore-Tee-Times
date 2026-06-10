@@ -82,7 +82,7 @@ python main.py run --now --headful
 `--config PATH` · `--env PATH` · `-v/--verbose` · `--version`
 
 ### `run` / `check` / `info` override flags
-`--date "Saturday, June 14"` · `--time-window "between 7:00 AM and 9:00 AM"` ·
+`--date "next Saturday"` · `--time-window "between 7:00 AM and 9:00 AM"` ·
 `--players 2` · `--course "Fox Hollow,Eagle Ridge"` · `--priority course|time` ·
 `--timezone America/New_York` · `--prefire-seconds 90`
 
@@ -112,7 +112,7 @@ so no reservation is made.
 
 ```yaml
 booking:
-  desired_date: "Saturday, June 14"      # natural phrasings accepted
+  desired_date: "next Saturday"          # natural phrasings; named weekday must match the date
   time_window: { start: "07:00", end: "09:00" }
   players: 4
   courses: ["Fox Hollow", "Eagle Ridge"]  # ordered by preference; [] = single-course
@@ -223,7 +223,7 @@ The dependency-light core logic (date/time parsing, slot selection, unlock math)
 is unit-tested without needing a browser:
 
 ```bash
-python -m pytest -q          # 32 tests
+python -m pytest -q          # 40 tests
 ```
 
 For an end-to-end browser smoke test against a local mock booking page (no real

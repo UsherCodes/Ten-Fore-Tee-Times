@@ -95,6 +95,7 @@ class Slot:
     label: str  # original text, e.g. "07:20 AM"
     handle_index: int  # index into the located slot rows
     course: str | None = None  # which course this slot belongs to
+    selector: str | None = None  # the slot_row selector these rows came from
 
 
 @dataclass
@@ -218,21 +219,31 @@ class TenforeBooker:
                 else:
                     await password.press("Enter")
 
-                await self.page.wait_for_load_state("networkidle", timeout=self.config.timeout_ms)
+                try:
+                    await self.page.wait_for_load_state(
+                        "networkidle", timeout=self.config.timeout_ms)
+                except PWTimeout:
+                    self.log.debug("networkidle wait timed out after submit (continuing).")
 
                 if await self._first_visible("logged_in_marker", timeout=4000):
                     self.log.info("Login successful.")
                     return True
 
                 # Some sites land directly on the dashboard with no logout link
-                # visible above the fold — treat absence of a password field as
-                # a soft success signal.
+                # visible above the fold. Absence of a password field is a soft
+                # success signal, but it could also be an error/redirect page, so
+                # we proceed with an explicit "unverified" warning rather than
+                # claiming success.
                 if not await self._first_visible("password_input", timeout=1500):
-                    self.log.info("Login appears successful (no login form present).")
+                    self.log.warning(
+                        "Login attempt %d: no login form present but no logged-in "
+                        "marker found either — proceeding with UNVERIFIED auth. "
+                        "If booking fails, check the 'logged_in_marker' selector.",
+                        attempt)
                     return True
 
                 self.log.warning("Login attempt %d did not confirm success.", attempt)
-            except (PWTimeout, RuntimeError, Exception) as exc:
+            except Exception as exc:
                 self.log.warning("Login attempt %d failed: %s", attempt, exc)
 
             if attempt < self.config.login_attempts:
@@ -279,7 +290,7 @@ class TenforeBooker:
 
                 self.log.info("Booking page reached (attempt %d).", attempt)
                 return True
-            except (PWTimeout, Exception) as exc:
+            except Exception as exc:
                 self.log.warning("Booking page attempt %d failed: %s", attempt, exc)
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
@@ -289,6 +300,19 @@ class TenforeBooker:
     def _budget_deadline(self) -> float:
         """A monotonic deadline ``selection_budget_seconds`` from now."""
         return time.monotonic() + self.config.selection_budget_seconds
+
+    async def _settle(self, timeout: int = 8000) -> None:
+        """Best-effort wait for the network to go idle. Never raises.
+
+        Used after a successful action (date set, course chosen) so a slow or
+        never-idle page (long-polling, websockets) can't make the caller think
+        the action failed and retry a different element.
+        """
+        assert self.page
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=timeout)
+        except Exception:
+            self.log.debug("networkidle wait timed out (continuing).")
 
     # ------------------------------------------------------------- date selection
     async def select_date(self) -> bool:
@@ -319,7 +343,9 @@ class TenforeBooker:
                 await date_input.fill(target.strftime("%Y-%m-%d"))
                 await date_input.dispatch_event("change")
                 self.log.info("Selected date via date input: %s", target.isoformat())
-                await self.page.wait_for_load_state("networkidle", timeout=8000)
+                # The fill succeeded — the date IS set. Don't let a slow/never-idle
+                # network make us fall through and click a different date.
+                await self._settle()
                 return True
             except Exception:
                 pass
@@ -340,11 +366,11 @@ class TenforeBooker:
                     loc = self.page.locator(sel).first
                     await loc.wait_for(state="visible", timeout=wait)
                     await loc.click()
-                    self.log.info("Selected date via %r", sel)
-                    await self.page.wait_for_load_state("networkidle", timeout=8000)
-                    return True
                 except Exception:
                     continue
+                self.log.info("Selected date via %r", sel)
+                await self._settle()
+                return True
 
         self.log.warning(
             "Could not explicitly select date %s — proceeding with whatever the "
@@ -370,11 +396,11 @@ class TenforeBooker:
                            {"label": _loose(course)}):
                 try:
                     await dropdown.select_option(**kwargs)
-                    self.log.info("Selected course %r via dropdown.", course)
-                    await self.page.wait_for_load_state("networkidle", timeout=8000)
-                    return True
                 except Exception:
                     continue
+                self.log.info("Selected course %r via dropdown.", course)
+                await self._settle()
+                return True
 
         # 2) Click a tab/link/button/option whose visible text matches the name.
         for sel in (f"[role='tab']:has-text('{course}')",
@@ -392,11 +418,11 @@ class TenforeBooker:
                 loc = self.page.locator(sel).first
                 await loc.wait_for(state="visible", timeout=wait)
                 await loc.click()
-                self.log.info("Selected course %r via %r", course, sel)
-                await self.page.wait_for_load_state("networkidle", timeout=8000)
-                return True
             except Exception:
                 continue
+            self.log.info("Selected course %r via %r", course, sel)
+            await self._settle()
+            return True
 
         self.log.warning(
             "Could not explicitly select course %r — proceeding with whatever the "
@@ -426,6 +452,7 @@ class TenforeBooker:
         """Scrape available tee times currently shown on the page."""
         assert self.page
         rows = None
+        used_selector = None
         for sel in self.selectors["slot_row"]:
             loc = self.page.locator(sel)
             try:
@@ -434,6 +461,7 @@ class TenforeBooker:
                 count = 0
             if count:
                 rows = loc
+                used_selector = sel
                 self.log.debug("Using slot selector %r (%d rows).", sel, count)
                 break
 
@@ -458,7 +486,8 @@ class TenforeBooker:
             if any(w in lowered for w in ("full", "unavailable", "booked", "sold out")):
                 continue
             slots.append(Slot(time=t, label=_first_time_label(text),
-                              handle_index=i, course=course))
+                              handle_index=i, course=course,
+                              selector=used_selector))
 
         slots.sort(key=lambda s: s.time)
         where = f" at {course}" if course else ""
@@ -509,7 +538,14 @@ class TenforeBooker:
         """
         assert self.page
         if slot.course:
-            await self.select_course(slot.course)
+            if not await self.select_course(slot.course) and len(self.config.courses) > 1:
+                # With multiple courses configured we must be sure we're on the
+                # right one — booking a time-matched slot on the wrong course
+                # would be worse than failing. Let the runner try the next slot.
+                self.log.error(
+                    "Could not select course %r for booking; aborting this slot so "
+                    "we don't book on the wrong course.", slot.course)
+                return False
         await self.select_date()
 
         fresh = await self.collect_slots(course=slot.course)
@@ -519,8 +555,11 @@ class TenforeBooker:
                              slot.label, f" at {slot.course}" if slot.course else "")
             return False
 
+        # Reuse the exact selector collect_slots matched, so the row index can't
+        # point into a different (broader) selector's element list.
         row = None
-        for sel in self.selectors["slot_row"]:
+        selectors = ([match.selector] if match.selector else []) + self.selectors["slot_row"]
+        for sel in selectors:
             loc = self.page.locator(sel)
             if await loc.count() > match.handle_index:
                 row = loc.nth(match.handle_index)

@@ -179,11 +179,8 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
     if priority not in ("course", "time"):
         raise ValueError("priority must be 'course' (time flexible) or "
                          "'time' (location flexible).")
-    if priority == "course" and not courses:
-        # Course-priority needs a course to lock onto; warn via ValueError only
-        # if the platform genuinely has courses. We allow empty for single-course
-        # sites, so just fall through — courses_to_search() handles [None].
-        pass
+    # Empty courses is allowed for single-course sites: courses_to_search()
+    # returns [None] and the booking flow runs once against the default sheet.
 
     unlock_time = timeparse.parse_time(str(scheduling.get("unlock_time", "00:00")))
 
@@ -197,8 +194,9 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         unlock_days_before=int(scheduling.get("unlock_days_before", 8)),
         unlock_time=unlock_time,
         timezone=tz,
-        prefire_seconds=int(overrides.get("prefire_seconds")
-                            or scheduling.get("prefire_seconds", 60)),
+        prefire_seconds=int(overrides["prefire_seconds"]
+                            if "prefire_seconds" in overrides
+                            else scheduling.get("prefire_seconds", 60)),
         poll_interval_seconds=float(scheduling.get("poll_interval_seconds", 1.5)),
         selection_budget_seconds=float(scheduling.get("selection_budget_seconds", 6)),
         login_attempts=int(retry.get("login_attempts", 10)),

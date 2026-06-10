@@ -57,16 +57,18 @@ def parse_date(text: str, *, today: dt.date | None = None) -> dt.date:
     if wd_match and wd_match.group(1) in _WEEKDAYS:
         target = _WEEKDAYS[wd_match.group(1)]
         ahead = (target - today.weekday()) % 7
-        if ahead == 0 or lowered.startswith("next"):
-            ahead = ahead or 7
-            if lowered.startswith("next") and ahead < 7:
-                ahead += 0  # "next <day>" -> the upcoming one
+        # Bare/"this"/"next" all mean the upcoming occurrence; if that is today,
+        # roll forward a week so we never return a same-day (already-open) date.
+        if ahead == 0:
+            ahead = 7
         return today + dt.timedelta(days=ahead)
 
     # "Saturday, June 14" / "June 14" / "14 June" / "Jun 14 2026"
-    # Strip leading weekday + punctuation if present.
-    cleaned = re.sub(r"^[a-z]+,?\s+", "",
-                     lowered) if lowered.split()[0].rstrip(",") in _WEEKDAYS else lowered
+    # Capture the leading weekday name (if any) so we can sanity-check it later,
+    # then strip it before parsing the month/day.
+    first_token = lowered.split()[0].rstrip(",")
+    stated_weekday = _WEEKDAYS.get(first_token) if first_token in _WEEKDAYS else None
+    cleaned = re.sub(r"^[a-z]+(?:,|\s)+\s*", "", lowered) if stated_weekday is not None else lowered
     tokens = re.findall(r"[a-z]+|\d+", cleaned)
 
     month = day = year = None
@@ -84,8 +86,18 @@ def parse_date(text: str, *, today: dt.date | None = None) -> dt.date:
 
     if month and day:
         if year:
-            return _make_date(year, month, day)
-        return _nearest_future(today, lambda yr: _make_date(yr, month, day))
+            result = _make_date(year, month, day)
+        else:
+            result = _nearest_future(today, lambda yr: _make_date(yr, month, day))
+        # If the user named a weekday, make sure it matches — a mismatch means a
+        # typo in either the weekday or the day number, which would silently book
+        # the wrong day.
+        if stated_weekday is not None and result.weekday() != stated_weekday:
+            raise ParseError(
+                f"{result.strftime('%B %d, %Y')} is a {calendar.day_name[result.weekday()]}, "
+                f"not a {calendar.day_name[stated_weekday]}. Check the date you entered."
+            )
+        return result
 
     raise ParseError(f"could not understand date: {text!r}")
 
