@@ -174,7 +174,7 @@ def run_setup(console: Console,
         "browser": existing.get("browser", {"headless": True, "timeout_ms": 30000}),
         "notifications": existing.get("notifications", {"macos_desktop": True}),
         "paths": existing.get("paths", {"log_dir": "logs", "screenshot_dir": "screenshots"}),
-        "site": existing.get("site", {"base_url": "https://www.fox.tenfore.golf"}),
+        "site": existing.get("site", {"base_url": "https://fox.tenfore.golf/mcggolf"}),
     }
 
     with config_path.open("w") as fh:

@@ -1,7 +1,7 @@
 # 🏌️ Tenfore Tee-Time Auto-Booker
 
 A Python CLI that races to book a golf tee time on the
-[Tenfore Golf](https://www.fox.tenfore.golf) platform the instant the booking
+[Tenfore Golf](https://fox.tenfore.golf/mcggolf) platform the instant the booking
 window opens (typically 8 days before play). It waits out a precise countdown,
 then hammers the booking page with Playwright, logs in, finds the earliest slot
 in your preferred time window, books it, screenshots the confirmation, and pings
@@ -133,7 +133,7 @@ browser: { headless: true, timeout_ms: 30000 }
 notifications: { macos_desktop: true }
 paths: { log_dir: "logs", screenshot_dir: "screenshots" }
 site:
-  base_url: "https://www.fox.tenfore.golf"
+  base_url: "https://fox.tenfore.golf/mcggolf"
 ```
 
 ### The booking-unlock calculation
@@ -178,7 +178,7 @@ the defaults remain as fallback:
 
 ```yaml
 site:
-  base_url: "https://www.fox.tenfore.golf"
+  base_url: "https://fox.tenfore.golf/mcggolf"
   selectors:
     login_link:   ["a.member-login"]
     course_select: ["select#course-picker"]

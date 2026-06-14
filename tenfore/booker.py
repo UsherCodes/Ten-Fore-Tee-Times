@@ -2,7 +2,7 @@
 
 IMPORTANT — SELECTORS
 ---------------------
-The exact DOM of www.fox.tenfore.golf can vary by club and changes over time,
+The exact DOM of fox.tenfore.golf can vary by club and changes over time,
 so this module never relies on a single brittle selector. Each step tries an
 ordered list of *candidate* locators (role-based, text-based, and CSS) and uses
 the first that resolves. You can override or extend every candidate list from

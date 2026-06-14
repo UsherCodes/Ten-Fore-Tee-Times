@@ -208,7 +208,7 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         macos_desktop=bool(notifications.get("macos_desktop", True)),
         log_dir=Path(paths.get("log_dir", "logs")),
         screenshot_dir=Path(paths.get("screenshot_dir", "screenshots")),
-        base_url=str(site.get("base_url", "https://www.fox.tenfore.golf")).rstrip("/"),
+        base_url=str(site.get("base_url", "https://fox.tenfore.golf/mcggolf")).rstrip("/"),
         dry_run=bool(overrides.get("dry_run", False)),
         raw=raw,
     )
