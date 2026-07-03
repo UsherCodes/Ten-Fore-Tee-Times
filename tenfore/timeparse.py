@@ -46,7 +46,11 @@ def parse_date(text: str, *, today: dt.date | None = None) -> dt.date:
         m, d, y = mdy.groups()
         m, d = int(m), int(d)
         if y is None:
-            return _nearest_future(today, lambda yr: _make_date(yr, m, d))
+            try:
+                return _nearest_future(today, lambda yr: _make_date(yr, m, d))
+            except ParseError as exc:
+                raise ParseError(
+                    f"could not understand date: {text!r} ({exc})") from exc
         y = int(y)
         if y < 100:
             y += 2000

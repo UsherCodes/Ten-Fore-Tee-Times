@@ -53,7 +53,7 @@ def _config(tmp: Path, *, dry_run: bool = False) -> BookingConfig:
         courses=[], priority="time",
         unlock_days_before=8, unlock_time=dt.time(0, 0), timezone=ZoneInfo("UTC"),
         prefire_seconds=60, poll_interval_seconds=0.2, selection_budget_seconds=3,
-        login_attempts=3,
+        login_attempts=3, login_window_seconds=30,
         login_delay_seconds=0.2, booking_window_minutes=1, fallback_to_next_best=True,
         headless=True, timeout_ms=10000, macos_desktop=False,
         log_dir=tmp / "logs", screenshot_dir=tmp / "shots",

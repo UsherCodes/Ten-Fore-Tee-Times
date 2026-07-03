@@ -147,6 +147,17 @@ def run_setup(console: Console,
     timezone = Prompt.ask("[bold]Timezone[/bold] (IANA name, blank = system local)",
                           default=str(scheduling.get("timezone", "America/New_York")))
 
+    # Re-resolve the date against "today" in the chosen timezone — a relative
+    # phrase like "next Saturday" parsed near midnight could otherwise land a
+    # day off from what `run` (which uses the configured tz) would compute.
+    if timezone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz_today = dt.datetime.now(tz=ZoneInfo(timezone)).date()
+            parsed = timeparse.parse_date(raw_date, today=tz_today)
+        except Exception:
+            pass  # keep the earlier system-local parse
+
     # ---- Build config ----
     config = {
         "booking": {

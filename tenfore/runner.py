@@ -235,9 +235,14 @@ async def run_check(config: BookingConfig,
                     slots = await booker.collect_slots(course=course)
                     in_win = [s for s in slots if config.window_contains(s.time)]
                     slot_ok = len(slots) > 0
-                    detail = (f"{len(slots)} slot(s), {len(in_win)} in window"
-                              + (f" — e.g. {', '.join(s.label for s in slots[:5])}"
-                                 if slots else " — check 'slot_row' selector"))
+                    if slots:
+                        detail = (f"{len(slots)} slot(s), {len(in_win)} in window "
+                                  f"— e.g. {', '.join(s.label for s in slots[:5])}")
+                    elif await booker._looks_like_booking_page():
+                        detail = ("0 slots — page looks right; the booking window "
+                                  "for this date may simply not be open yet")
+                    else:
+                        detail = "no slot rows found — check the 'slot_row' selector"
                     record(f"Slots @ {label}", slot_ok, detail)
                     all_ok &= slot_ok
 

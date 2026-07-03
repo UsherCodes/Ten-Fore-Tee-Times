@@ -22,3 +22,6 @@ venv/
 
 # Claude Code workspace
 .claude/
+
+# Persisted browser session (contains auth cookies)
+.tenfore-session.json

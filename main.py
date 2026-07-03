@@ -28,7 +28,8 @@ from tenfore.config import (
     load_credentials,
 )
 from tenfore.logsetup import setup_logging
-from tenfore.runner import run_booking, run_check
+# run_booking/run_check are imported lazily inside the run/check handlers so
+# that `info` and `setup` don't pay the full Playwright import chain.
 from tenfore.setup_wizard import run_setup
 
 console = Console()
@@ -173,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             "[bold]No reservation will be made.[/bold]",
             title="🔎  Tenfore Booker — Check", border_style="cyan",
         ))
+        from tenfore.runner import run_check
         try:
             ok = asyncio.run(run_check(config, credentials, console))
         except KeyboardInterrupt:
@@ -195,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             title="🏌️  Tenfore Tee-Time Booker", border_style="green",
         ))
 
+        from tenfore.runner import run_booking
         try:
             result = asyncio.run(
                 run_booking(config, credentials, console, skip_wait=args.now)

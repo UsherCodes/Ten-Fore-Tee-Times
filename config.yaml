@@ -10,7 +10,9 @@ booking:
   # The date you want to PLAY golf. Accepts natural phrasings like
   # "Sunday, June 14", "2026-06-14", "June 14", "next Saturday". If you name a
   # weekday it must match the date, otherwise parsing errors (catches typos).
-  desired_date: "Sunday, June 14"
+  # (The default below is evergreen; `python3 main.py setup` writes a
+  #  concrete ISO date here.)
+  desired_date: "next Saturday"
 
   # Preferred tee-time window. Earliest available slot inside the window wins.
   # 24h or 12h clock both accepted on the CLI / wizard.
@@ -60,9 +62,11 @@ scheduling:
   selection_budget_seconds: 6
 
 retry:
-  # Login retry attempts and the delay between them.
+  # Login retry attempts, the delay between them, and a hard wall-clock cap
+  # for the whole login loop (protects the booking race from a stuck login).
   login_attempts: 10
   login_delay_seconds: 2
+  login_window_seconds: 90
 
   # Max total minutes to keep retrying the booking page after the unlock
   # moment before giving up (handles "page not open yet" + transient errors).

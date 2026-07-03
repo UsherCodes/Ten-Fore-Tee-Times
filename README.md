@@ -24,9 +24,13 @@ you on the desktop.
   1–2s rapid polling loop with a live countdown.
 - **Playwright (async) automation** — Chromium login → booking page → date
   select → window filter → book earliest slot → screenshot.
-- **Resilient** — login retries (10×), keeps retrying a "not open yet" booking
-  page, falls back to the next-best slot if your window fills, and handles
-  timeouts/network errors gracefully.
+- **Resilient** — login retries (10× within a hard 90s cap), handles one-step
+  AND two-step (email → Next → password) login flows, keeps retrying a "not
+  open yet" booking page, falls back to the next-best slot if your window
+  fills, and handles timeouts/network errors gracefully.
+- **Session persistence** — the browser session is saved to a gitignored
+  `.tenfore-session.json` after each `check`/`run`, so the next run starts
+  already logged in (no login latency during the booking race).
 - **Notifications** — Rich terminal panels plus optional macOS desktop alerts
   (`osascript`).
 - **Config + CLI overrides** — everything lives in `config.yaml`; any run can be
@@ -37,34 +41,42 @@ you on the desktop.
 
 ## Install
 
-Requires **Python 3.11+**.
+Requires **Python 3.9+** (tested on 3.11). On macOS the command is `python3`,
+not `python` — and a virtual environment is **required** (modern Homebrew /
+python.org installs refuse global `pip install` with an
+`externally-managed-environment` error; the venv avoids that entirely).
 
 ```bash
+cd <this project folder>
+python3 -m venv .venv
+source .venv/bin/activate                    # do this in every new terminal
 pip install -r requirements.txt
-python -m playwright install chromium      # one-time browser download
+python3 -m playwright install chromium       # one-time browser download (~150 MB)
 ```
+
+Run all commands from inside the project folder with the venv active.
 
 ## Quick start
 
 ```bash
 # 1. Configure interactively (writes config.yaml + .env)
-python main.py setup
+python3 main.py setup
 
 # 2. Sanity-check the resolved settings & unlock moment
-python main.py info
+python3 main.py info
 
 # 3. Validate login + selectors against the real site, WITHOUT booking
-python main.py check --headful
+python3 main.py check --headful
 
 # 4. Arm it — it waits for the window, then books. Leave it running.
-python main.py run
+python3 main.py run
 ```
 
 To watch the browser work while debugging, add `--headful`. To skip the
 countdown and attempt a booking right now (e.g. the window is already open):
 
 ```bash
-python main.py run --now --headful
+python3 main.py run --now --headful
 ```
 
 ---
@@ -94,10 +106,10 @@ python main.py run --now --headful
 
 ```bash
 # Confirm login + selectors + visible slots work, right now, without booking:
-python main.py check --headful
+python3 main.py check --headful
 
 # A full rehearsal at the real moment that stops short of confirming:
-python main.py run --dry-run --headful
+python3 main.py run --dry-run --headful
 ```
 
 `check` prints a pass/fail table for each step (login → booking page → course →
@@ -127,11 +139,12 @@ scheduling:
 retry:
   login_attempts: 10
   login_delay_seconds: 2
+  login_window_seconds: 90               # hard wall-clock cap on the login loop
   booking_window_minutes: 5              # keep retrying the page this long
   fallback_to_next_best: true
 browser: { headless: true, timeout_ms: 30000 }
 notifications: { macos_desktop: true }
-paths: { log_dir: "logs", screenshot_dir: "screenshots" }
+paths: { log_dir: "logs", screenshot_dir: "screenshots" }  # relative paths resolve next to config.yaml
 site:
   base_url: "https://fox.tenfore.golf/mcggolf"
 ```
@@ -141,7 +154,7 @@ site:
 `unlock = desired_date − unlock_days_before days`, at `unlock_time`, in
 `timezone`. With the defaults, a **Sun Jun 14** play date unlocks
 **Sat Jun 6 at 00:00 America/New_York**, and polling starts at `23:59:00` the
-night before. Verify any time with `python main.py info`.
+night before. Verify any time with `python3 main.py info`.
 
 ### Courses & priority modes
 
@@ -155,10 +168,10 @@ pick what to optimise for with `booking.priority`:
 
 ```bash
 # Lock onto Fox Hollow, take whatever time you can get:
-python main.py run --priority course --course "Fox Hollow"
+python3 main.py run --priority course --course "Fox Hollow"
 
 # I just want a 7–9am slot — book the earliest one at any of these courses:
-python main.py run --priority time --course "Fox Hollow,Eagle Ridge,Pine Valley"
+python3 main.py run --priority time --course "Fox Hollow,Eagle Ridge,Pine Valley"
 ```
 
 For single-course platforms, leave `courses: []`; no course is selected and the
@@ -223,14 +236,16 @@ The dependency-light core logic (date/time parsing, slot selection, unlock math)
 is unit-tested without needing a browser:
 
 ```bash
-python -m pytest -q          # 40 tests
+python3 -m pytest -q          # 40 tests
 ```
 
 For an end-to-end browser smoke test against a local mock booking page (no real
 network, no credentials), once Chromium is installed:
 
 ```bash
-python tests/smoke_browser.py
+python3 tests/smoke_browser.py      # end-to-end booking flow vs a mock page
+python3 tests/fixtures_browser.py   # login (one/two-step), session persistence,
+                                    # course/date variants, error-page rejection
 ```
 
 This launches a real Chromium, scrapes the mock slots, books the earliest one in
@@ -246,10 +261,10 @@ midnight, your computer can't be asleep. Keep it awake for the duration:
 
 ```bash
 # macOS — prevent sleep while the booker runs (Ctrl-C to stop):
-caffeinate -s python main.py run
+caffeinate -s python3 main.py run
 
 # Linux — disable sleep/idle for the session, or run on an always-on box:
-systemd-inhibit --what=idle:sleep python main.py run
+systemd-inhibit --what=idle:sleep python3 main.py run
 ```
 
 For a hands-off setup, run it on an always-on machine (a home server, a small
@@ -265,7 +280,7 @@ sandbox where needed with the env vars below.
 | `playwright install` can't download Chromium (locked-down network / proxy) | Install Chromium another way and set `TENFORE_CHROMIUM_PATH=/path/to/chrome`. The booker will launch that binary instead of a managed download. |
 | `Running as root without --no-sandbox` / browser won't launch in a container | Set `TENFORE_NO_SANDBOX=1` to launch with `--no-sandbox`. |
 | "Could not locate login form fields" / "Could not explicitly select date/course" | The club's DOM doesn't match the default selectors — run with `--headful` to watch, then add overrides under `site.selectors:` (see *Tuning selectors*). |
-| Booking page never opens | The window genuinely hasn't unlocked, or `unlock_time`/`timezone` are wrong. Verify with `python main.py info`; widen `retry.booking_window_minutes` if needed. |
+| Booking page never opens | The window genuinely hasn't unlocked, or `unlock_time`/`timezone` are wrong. Verify with `python3 main.py info`; widen `retry.booking_window_minutes` if needed. |
 | Nothing books though slots exist | Your window may be full and `fallback_to_next_best` is off, or `priority: course` is locked to a course with no openings. Check `logs/tenfore.log`. |
 | No desktop notification on macOS | First run prompts for permission; ensure Terminal/your runner is allowed under System Settings → Notifications. The tool still works without it. |
 

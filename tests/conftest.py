@@ -1,0 +1,6 @@
+"""Make the project root importable regardless of pytest's invocation CWD."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
