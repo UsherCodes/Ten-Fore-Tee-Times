@@ -468,8 +468,22 @@ class TenforeBooker:
             target.strftime("%B %d"),
         ]
 
+        # 0) Direct ISO day-cell: some tee sheets/pickers expose the ISO date
+        # as an attribute or id on an always-present element — instant win.
+        try:
+            iso = target.isoformat()
+            loc = self.page.locator(f"[data-date='{iso}'], [id='{iso}']").first
+            await loc.wait_for(state="visible",
+                               timeout=_remaining_ms(deadline, cap=500) or 1)
+            await loc.click()
+            await self._settle(3000)
+            self.log.info("Selected date via direct ISO cell: %s", iso)
+            return True
+        except Exception:
+            pass
+
         # 1) A real <input type=date> is the most reliable.
-        wait = _remaining_ms(deadline, cap=2000)
+        wait = _remaining_ms(deadline, cap=1000)
         if wait:
             try:
                 date_input = self.page.locator("input[type='date']").first
