@@ -356,6 +356,13 @@ class TenforeBooker:
         while self.config.now() < deadline:
             attempt += 1
             try:
+                # The page we're already on (e.g. the post-login landing page)
+                # may itself be the booking page — check before navigating away.
+                if await self._looks_like_booking_page():
+                    self.log.info("Current page already shows booking content "
+                                  "(attempt %d).", attempt)
+                    return True
+
                 nav = await self._first_visible("booking_nav", timeout=3000)
                 if nav:
                     await nav.click()

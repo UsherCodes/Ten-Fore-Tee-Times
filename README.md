@@ -232,6 +232,11 @@ Supported keys: `login_link`, `email_input`, `password_input`, `login_submit`,
 
 ## Testing
 
+> **CI note:** `.github/workflows/test.yml` runs the unit suite and browser
+> smoke test on GitHub Actions (push to main / PRs / manual dispatch). If your
+> hosting environment doesn't execute Actions, the three local commands below
+> are the complete, equivalent verification battery.
+
 The dependency-light core logic (date/time parsing, slot selection, unlock math)
 is unit-tested without needing a browser:
 
