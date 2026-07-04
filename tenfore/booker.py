@@ -64,6 +64,16 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
         "a:has-text('Book')", "a:has-text('Booking')", "[href*='booking']",
         "[href*='teetime']", "[href*='tee-time']",
     ],
+    # Custom date pickers (Vue/React chip widgets): the chip/button that OPENS
+    # the calendar popup, and the popup's next-month arrow.
+    "date_opener": [
+        "[class*='date-button']", "button:has([class*='date-button'])",
+        "button:has(.fa-calendar-days)", "[class*='datepicker-toggle']",
+    ],
+    "date_next_month": [
+        "[aria-label*='next' i]", "[class*='chevron-right']",
+        "[class*='next-month']", "button:has-text('›')", "button:has-text('»')",
+    ],
     # A dropdown/select used to pick the golf course. select_course() also tries
     # clicking a tab/link/button whose text matches the course name.
     "course_select": [
@@ -75,6 +85,11 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
     "slot_row": [
         "[class*='teetime']", "[class*='tee-time']", "[class*='slot']",
         "tr[class*='booking']", "[data-time]", ".available",
+        # TenFore SPA result cards (time + course + price in a clickable card).
+        "div.bg-white.rounded-md.cursor-pointer",
+        # Last resort for card-style SPAs: any div whose text STARTS with a
+        # clock time (e.g. "12:36 PM Falls Road Golf Course $81.00").
+        'div:text-matches("^\\s*\\d{1,2}:\\d{2}\\s*[AP]\\.?M", "i")',
     ],
     "book_button": [
         "button:has-text('Book')", "a:has-text('Book')",
@@ -451,11 +466,24 @@ class TenforeBooker:
             target.strftime("%d %B %Y"),
             target.strftime("%A %d %B"),
             target.strftime("%B %d"),
-            str(target.day),
         ]
 
+        # 0) Direct ISO day-cell: some tee sheets/pickers expose the ISO date
+        # as an attribute or id on an always-present element — instant win.
+        try:
+            iso = target.isoformat()
+            loc = self.page.locator(f"[data-date='{iso}'], [id='{iso}']").first
+            await loc.wait_for(state="visible",
+                               timeout=_remaining_ms(deadline, cap=500) or 1)
+            await loc.click()
+            await self._settle(3000)
+            self.log.info("Selected date via direct ISO cell: %s", iso)
+            return True
+        except Exception:
+            pass
+
         # 1) A real <input type=date> is the most reliable.
-        wait = _remaining_ms(deadline, cap=2000)
+        wait = _remaining_ms(deadline, cap=1000)
         if wait:
             try:
                 date_input = self.page.locator("input[type='date']").first
@@ -469,6 +497,61 @@ class TenforeBooker:
                 return True
             except Exception:
                 pass
+
+        # 1.5) Chip-style picker (Vue/React SPA): click the chip that opens the
+        # calendar popup, click the EXACT day number, then verify the chip text
+        # actually changed to the target date. Exact-text matching (:text-is)
+        # is essential: has-text('11') would also match an "11:59 PM" chip.
+        opener = await self._first_visible(
+            "date_opener", timeout=_remaining_ms(deadline, cap=2000) or 1)
+        if opener:
+            try:
+                await opener.click()
+                await asyncio.sleep(0.35)  # let the popup render
+                for month_hop in range(2):  # retry once after next-month nav
+                    day_cell = None
+                    for sel in (f"[id='{target.isoformat()}']",
+                                f"[class*='calendar_item']:has(:text-is('{target.day}'))",
+                                f"[class*='calendar'] :text-is('{target.day}')",
+                                f"[class*='picker'] :text-is('{target.day}')",
+                                f"[class*='popup'] :text-is('{target.day}')",
+                                f"[class*='menu'] :text-is('{target.day}')",
+                                f"td:text-is('{target.day}')",
+                                f"button:text-is('{target.day}')",
+                                f"span:text-is('{target.day}')"):
+                        wait = _remaining_ms(deadline, cap=800)
+                        if not wait:
+                            break
+                        try:
+                            loc = self.page.locator(sel).first
+                            await loc.wait_for(state="visible", timeout=wait)
+                            day_cell = loc
+                            break
+                        except Exception:
+                            continue
+                    if day_cell:
+                        await day_cell.click()
+                        await self._settle(3000)
+                        if await self._date_chip_matches(target):
+                            self.log.info("Selected date via picker popup: %s",
+                                          target.isoformat())
+                            return True
+                    if month_hop == 0 and _remaining_ms(deadline, cap=1) > 0:
+                        nxt = await self._first_visible(
+                            "date_next_month",
+                            timeout=_remaining_ms(deadline, cap=800) or 1)
+                        if not nxt:
+                            break
+                        await nxt.click()
+                        await asyncio.sleep(0.25)
+                self.log.debug("Picker popup flow did not verify the target date.")
+                await self.page.keyboard.press("Escape")  # close a stray popup
+            except Exception as exc:
+                self.log.debug("Picker popup flow failed: %s", exc)
+                try:
+                    await self.page.keyboard.press("Escape")
+                except Exception:
+                    pass
 
         # 2) Click a day cell / link matching one of the textual forms.
         for text in candidates:
@@ -498,6 +581,20 @@ class TenforeBooker:
         )
         return False
 
+    async def _date_chip_matches(self, target: dt.date) -> bool:
+        """True if the date chip's visible text now shows the target date
+        (e.g. 'Jul 11, 2026'). Month is accepted as short or full name."""
+        chip = await self._first_visible("date_opener", timeout=1200)
+        if not chip:
+            return False
+        try:
+            text = (await chip.inner_text()).strip()
+        except Exception:
+            return False
+        return (str(target.day) in text
+                and (target.strftime("%b") in text or target.strftime("%B") in text)
+                and str(target.year) in text)
+
     # ----------------------------------------------------------- course selection
     async def select_course(self, course: str) -> bool:
         """Select a golf course by name via a dropdown, tab, link, or button.
@@ -524,6 +621,8 @@ class TenforeBooker:
 
         # 2) Click a tab/link/button/option whose visible text matches the name.
         for sel in (f"[role='tab']:has-text('{course}')",
+                    f"button:text-is('{course}')",
+                    f"text=\"{course}\"",
                     f"a:has-text('{course}')",
                     f"button:has-text('{course}')",
                     f"li:has-text('{course}')",
@@ -598,10 +697,20 @@ class TenforeBooker:
         except Exception as exc:
             self.log.debug("all_inner_texts failed (%s); no rows readable.", exc)
             texts = []
+        # On multi-course tee sheets each card names its course. When a course
+        # was requested AND at least one row mentions it, keep only that
+        # course's rows — otherwise a stray toggled filter chip could surface
+        # (and book) another course's time.
+        course_filter = None
+        if course and any(course.lower() in t.lower() for t in texts):
+            course_filter = course.lower()
+
         for i, text in enumerate(texts):
             text = text.strip()
             t = _extract_time(text)
             if t is None:
+                continue
+            if course_filter and course_filter not in text.lower():
                 continue
             # Only treat it as bookable if it appears to offer a book action and
             # is not marked unavailable/full.
