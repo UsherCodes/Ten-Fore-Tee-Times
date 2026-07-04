@@ -31,7 +31,7 @@ scheduling:
 
 # --------------------------------------------------------------------- date parsing
 @pytest.mark.parametrize("text,expected", [
-    ("Saturday, June 14", dt.date(2026, 6, 14)),
+    ("Sunday, June 14", dt.date(2026, 6, 14)),   # June 14 2026 IS a Sunday
     ("2026-06-14", dt.date(2026, 6, 14)),
     ("June 14", dt.date(2026, 6, 14)),
     ("6/14", dt.date(2026, 6, 14)),
@@ -44,6 +44,26 @@ def test_parse_date(text, expected):
 def test_parse_date_infers_next_year_when_past():
     # Jan 1 is behind a June "today" -> should roll to next year.
     assert tp.parse_date("January 1", today=dt.date(2026, 6, 7)) == dt.date(2027, 1, 1)
+
+
+def test_parse_date_weekday_mismatch_raises():
+    # June 14, 2026 is a Sunday; naming Saturday is a typo and must error.
+    with pytest.raises(tp.ParseError):
+        tp.parse_date("Saturday, June 14", today=dt.date(2026, 6, 7))
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("saturday", dt.date(2026, 6, 13)),       # today is Sun Jun 7 -> upcoming Sat
+    ("next saturday", dt.date(2026, 6, 13)),
+    ("this saturday", dt.date(2026, 6, 13)),
+])
+def test_parse_weekday_only(text, expected):
+    assert tp.parse_date(text, today=dt.date(2026, 6, 7)) == expected
+
+
+def test_parse_weekday_today_rolls_forward():
+    # "sunday" when today is Sunday -> next week's Sunday, never same-day.
+    assert tp.parse_date("sunday", today=dt.date(2026, 6, 7)) == dt.date(2026, 6, 14)
 
 
 def test_parse_date_invalid():
@@ -93,7 +113,7 @@ def _config(**overrides) -> BookingConfig:
         unlock_days_before=8, unlock_time=dt.time(0, 0),
         timezone=ZoneInfo("UTC"), prefire_seconds=60, poll_interval_seconds=1.5,
         selection_budget_seconds=6,
-        login_attempts=10, login_delay_seconds=2, booking_window_minutes=5,
+        login_attempts=10, login_delay_seconds=2, login_window_seconds=90, booking_window_minutes=5,
         fallback_to_next_best=True, headless=True, timeout_ms=30000,
         macos_desktop=False, log_dir=Path("logs"), screenshot_dir=Path("screenshots"),
         base_url="https://x", raw={},
@@ -204,6 +224,39 @@ def test_load_config_cli_overrides_courses_and_priority(tmp_path):
 def test_load_config_rejects_bad_priority(tmp_path):
     with pytest.raises(ValueError):
         load_config(_write_yaml(tmp_path, "[]", "whatever"))
+
+
+def test_load_config_honors_prefire_zero_override(tmp_path):
+    # 0 is a legitimate override and must not be swallowed as falsy.
+    cfg = load_config(_write_yaml(tmp_path), overrides={"prefire_seconds": 0})
+    assert cfg.prefire_seconds == 0
+
+
+# ----------------------------------------------------------------- setup wizard
+def test_env_quote_roundtrips_special_chars(tmp_path):
+    from dotenv import dotenv_values
+    from tenfore.setup_wizard import _write_env
+
+    email = "chip+golf@example.com"
+    password = "p@ss #word$ with 'quotes' and \\slash"
+    env_path = tmp_path / ".env"
+    _write_env(env_path, email, password)
+    values = dotenv_values(env_path)
+    assert values["TENFORE_EMAIL"] == email
+    assert values["TENFORE_PASSWORD"] == password
+
+
+def test_merged_scheduling_preserves_unprompted_keys():
+    from tenfore.setup_wizard import _merged_scheduling
+
+    existing = {"selection_budget_seconds": 9, "poll_interval_seconds": 2.0,
+                "prefire_seconds": 30}
+    merged = _merged_scheduling(existing, {"unlock_days_before": 8,
+                                           "prefire_seconds": 60})
+    assert merged["selection_budget_seconds"] == 9      # carried through
+    assert merged["poll_interval_seconds"] == 2.0       # carried through
+    assert merged["prefire_seconds"] == 60              # answer wins
+    assert merged["unlock_days_before"] == 8
 
 
 if __name__ == "__main__":

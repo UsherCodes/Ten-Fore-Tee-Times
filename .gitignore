@@ -19,3 +19,9 @@ venv/
 
 # OS
 .DS_Store
+
+# Claude Code workspace
+.claude/
+
+# Persisted browser session (contains auth cookies)
+.tenfore-session.json

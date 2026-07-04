@@ -14,8 +14,9 @@ LOGGER_NAME = "tenfore"
 def setup_logging(log_dir: Path, console: Console, *, verbose: bool = False) -> logging.Logger:
     """Configure and return the package logger.
 
-    All attempts (login, polling, booking) are written with timestamps to a
-    rotating-by-run file under ``log_dir`` and mirrored to the console.
+    All attempts (login, polling, booking) are written with timestamps to
+    ``log_dir/tenfore.log`` (appended across runs — no rotation) and mirrored
+    to the console.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "tenfore.log"

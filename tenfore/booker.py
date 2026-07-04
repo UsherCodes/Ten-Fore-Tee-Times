@@ -2,7 +2,7 @@
 
 IMPORTANT — SELECTORS
 ---------------------
-The exact DOM of www.fox.tenfore.golf can vary by club and changes over time,
+The exact DOM of fox.tenfore.golf can vary by club and changes over time,
 so this module never relies on a single brittle selector. Each step tries an
 ordered list of *candidate* locators (role-based, text-based, and CSS) and uses
 the first that resolves. You can override or extend every candidate list from
@@ -37,11 +37,18 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
         "button:has-text('Login')", "[href*='login']",
     ],
     "email_input": [
-        "input[type='email']", "input[name='email']", "input[name='username']",
-        "input[id*='email']", "input[id*='user']",
+        "input[type='email']", "input[name='email' i]", "input[name='username' i]",
+        "input[id*='email' i]", "input[id*='user' i]",
+        "input[type='text'][name*='user' i]", "input[type='text'][id*='name' i]",
     ],
     "password_input": [
-        "input[type='password']", "input[name='password']", "input[id*='pass']",
+        "input[type='password']", "input[name='password' i]", "input[id*='pass' i]",
+    ],
+    # Button that advances a two-step login (email screen -> password screen).
+    "next_button": [
+        "button:has-text('Next')", "button:has-text('Continue')",
+        "input[type='submit'][value*='next' i]",
+        "input[type='submit'][value*='continue' i]",
     ],
     "login_submit": [
         "button[type='submit']", "input[type='submit']",
@@ -95,6 +102,7 @@ class Slot:
     label: str  # original text, e.g. "07:20 AM"
     handle_index: int  # index into the located slot rows
     course: str | None = None  # which course this slot belongs to
+    selector: str | None = None  # the slot_row selector these rows came from
 
 
 @dataclass
@@ -140,7 +148,7 @@ class TenforeBooker:
         if os.getenv("TENFORE_NO_SANDBOX") == "1":
             launch_kwargs["args"] = ["--no-sandbox"]
         self.browser = await self._pw.chromium.launch(**launch_kwargs)
-        self.context = await self.browser.new_context(
+        context_kwargs: dict = dict(
             viewport={"width": 1440, "height": 900},
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -148,11 +156,30 @@ class TenforeBooker:
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
         )
+        # Reuse a persisted session (cookies/localStorage) from a prior run so
+        # login can be skipped during the time-critical booking window.
+        state_file = self.config.session_file
+        if state_file and state_file.exists():
+            context_kwargs["storage_state"] = str(state_file)
+            self.log.info("Loaded persisted session from %s", state_file)
+        try:
+            self.context = await self.browser.new_context(**context_kwargs)
+        except Exception as exc:
+            self.log.warning("Persisted session unusable (%s) — starting fresh.", exc)
+            context_kwargs.pop("storage_state", None)
+            self.context = await self.browser.new_context(**context_kwargs)
         self.context.set_default_timeout(self.config.timeout_ms)
         self.page = await self.context.new_page()
         self.log.debug("Browser started (headless=%s)", self.config.headless)
 
     async def close(self) -> None:
+        # Persist the session so the next run starts pre-authenticated.
+        try:
+            if self.context and self.config.session_file:
+                await self.context.storage_state(path=str(self.config.session_file))
+                self.log.debug("Session state saved to %s", self.config.session_file)
+        except Exception as exc:
+            self.log.debug("Could not save session state: %s", exc)
         for closer in (self.context, self.browser):
             try:
                 if closer:
@@ -167,17 +194,35 @@ class TenforeBooker:
 
     # ------------------------------------------------------------------- helpers
     async def _first_visible(self, key: str, *, root=None, timeout: float = 2000):
-        """Return the first visible locator from a candidate list, or None."""
+        """Return the first visible locator from a candidate list, or None.
+
+        ``timeout`` is the wall-clock budget for the WHOLE candidate list.
+        Candidates are polled in preference order in short rounds until the
+        budget expires, so an element that appears late is still caught by a
+        later round, while a list of absent selectors costs at most ``timeout``
+        total (previously each candidate waited the full timeout, multiplying
+        worst-case dead time by the list length).
+        """
         scope = root or self.page
-        for sel in self.selectors.get(key, []):
-            try:
-                loc = scope.locator(sel).first
-                await loc.wait_for(state="visible", timeout=timeout)
-                return loc
-            except PWTimeout:
-                continue
-            except Exception as exc:
-                self.log.debug("Selector %r errored: %s", sel, exc)
+        candidates = self.selectors.get(key, [])
+        if not candidates:
+            return None
+        deadline = time.monotonic() + timeout / 1000
+        slice_ms = 100  # per-candidate probe per polling round
+        while time.monotonic() < deadline:
+            for sel in candidates:
+                remaining_ms = (deadline - time.monotonic()) * 1000
+                if remaining_ms <= 0:
+                    return None
+                try:
+                    loc = scope.locator(sel).first
+                    await loc.wait_for(state="visible",
+                                       timeout=min(slice_ms, remaining_ms))
+                    return loc
+                except PWTimeout:
+                    continue
+                except Exception as exc:
+                    self.log.debug("Selector %r errored: %s", sel, exc)
         return None
 
     async def _goto(self, url: str) -> None:
@@ -187,9 +232,22 @@ class TenforeBooker:
 
     # --------------------------------------------------------------------- login
     async def login(self) -> bool:
-        """Authenticate, retrying up to ``login_attempts`` times."""
+        """Authenticate, retrying until success, ``login_attempts``, or the
+        ``login_window_seconds`` wall-clock cap — whichever comes first.
+
+        Handles both one-step (email + password on one screen) and two-step
+        (email -> Next/Continue -> password) login flows.
+        """
         assert self.page
+        deadline = time.monotonic() + self.config.login_window_seconds
+        connection_error = False
         for attempt in range(1, self.config.login_attempts + 1):
+            if time.monotonic() >= deadline:
+                self.log.error(
+                    "Login wall-clock budget (%.0fs) exhausted after %d attempt(s).",
+                    self.config.login_window_seconds, attempt - 1)
+                return False
+            connection_error = False
             try:
                 self.log.info("Login attempt %d/%d", attempt, self.config.login_attempts)
                 await self._goto(self.config.base_url)
@@ -205,11 +263,36 @@ class TenforeBooker:
                     await self.page.wait_for_load_state("domcontentloaded")
 
                 email = await self._first_visible("email_input", timeout=5000)
-                password = await self._first_visible("password_input", timeout=5000)
-                if not email or not password:
-                    raise RuntimeError("Could not locate login form fields.")
-
+                if not email:
+                    raise RuntimeError("Could not locate the email/username field.")
                 await email.fill(self.creds.email)
+
+                # Two-step flows (typical ASP.NET) reveal the password field only
+                # after the email screen is advanced with a Next/Continue button.
+                password = await self._first_visible("password_input", timeout=1500)
+                if not password:
+                    advance = (await self._first_visible("next_button", timeout=2000)
+                               or await self._first_visible("login_submit", timeout=1500))
+                    if advance:
+                        await advance.click()
+                    else:
+                        await email.press("Enter")
+                    await self.page.wait_for_load_state("domcontentloaded")
+                    password = await self._first_visible("password_input", timeout=5000)
+                    if not password:
+                        raise RuntimeError(
+                            "No password field found, even after advancing a "
+                            "possible two-step login.")
+                    self.log.info("Two-step login detected; advanced to password screen.")
+                    # Some second screens re-render an empty email field; refill it.
+                    email2 = await self._first_visible("email_input", timeout=500)
+                    if email2:
+                        try:
+                            if not await email2.input_value():
+                                await email2.fill(self.creds.email)
+                        except Exception:
+                            pass
+
                 await password.fill(self.creds.password)
 
                 submit = await self._first_visible("login_submit", timeout=3000)
@@ -218,25 +301,42 @@ class TenforeBooker:
                 else:
                     await password.press("Enter")
 
-                await self.page.wait_for_load_state("networkidle", timeout=self.config.timeout_ms)
+                try:
+                    await self.page.wait_for_load_state(
+                        "networkidle", timeout=self.config.timeout_ms)
+                except PWTimeout:
+                    self.log.debug("networkidle wait timed out after submit (continuing).")
 
                 if await self._first_visible("logged_in_marker", timeout=4000):
                     self.log.info("Login successful.")
                     return True
 
                 # Some sites land directly on the dashboard with no logout link
-                # visible above the fold — treat absence of a password field as
-                # a soft success signal.
+                # visible above the fold. Absence of a password field is a soft
+                # success signal, but it could also be an error/redirect page, so
+                # we proceed with an explicit "unverified" warning rather than
+                # claiming success.
                 if not await self._first_visible("password_input", timeout=1500):
-                    self.log.info("Login appears successful (no login form present).")
+                    self.log.warning(
+                        "Login attempt %d: no login form present but no logged-in "
+                        "marker found either — proceeding with UNVERIFIED auth. "
+                        "If booking fails, check the 'logged_in_marker' selector.",
+                        attempt)
                     return True
 
                 self.log.warning("Login attempt %d did not confirm success.", attempt)
-            except (PWTimeout, RuntimeError, Exception) as exc:
-                self.log.warning("Login attempt %d failed: %s", attempt, exc)
+            except Exception as exc:
+                msg = str(exc)
+                # Connection-level failures (DNS, TLS, refused) will not be fixed
+                # by waiting out the normal delay — retry quickly instead.
+                connection_error = "net::ERR" in msg or "ERR_NAME" in msg
+                self.log.warning("Login attempt %d failed%s: %s", attempt,
+                                 " (connection error)" if connection_error else "",
+                                 msg.splitlines()[0][:200])
 
             if attempt < self.config.login_attempts:
-                await asyncio.sleep(self.config.login_delay_seconds)
+                await asyncio.sleep(0.5 if connection_error
+                                    else self.config.login_delay_seconds)
 
         self.log.error("All %d login attempts failed.", self.config.login_attempts)
         return False
@@ -256,6 +356,13 @@ class TenforeBooker:
         while self.config.now() < deadline:
             attempt += 1
             try:
+                # The page we're already on (e.g. the post-login landing page)
+                # may itself be the booking page — check before navigating away.
+                if await self._looks_like_booking_page():
+                    self.log.info("Current page already shows booking content "
+                                  "(attempt %d).", attempt)
+                    return True
+
                 nav = await self._first_visible("booking_nav", timeout=3000)
                 if nav:
                     await nav.click()
@@ -277,18 +384,55 @@ class TenforeBooker:
                     await asyncio.sleep(self.config.poll_interval_seconds)
                     continue
 
-                self.log.info("Booking page reached (attempt %d).", attempt)
-                return True
-            except (PWTimeout, Exception) as exc:
+                # Require POSITIVE evidence of a booking page before declaring
+                # success — a 404/error page has no closed-marker either, and
+                # proceeding on one would mask the real failure as "no slots".
+                if await self._looks_like_booking_page():
+                    self.log.info("Booking page reached (attempt %d).", attempt)
+                    return True
+                self.log.info("Page has no booking content yet (attempt %d) — "
+                              "retrying.", attempt)
+                await asyncio.sleep(self.config.poll_interval_seconds)
+            except Exception as exc:
                 self.log.warning("Booking page attempt %d failed: %s", attempt, exc)
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
         self.log.error("Booking page never became available within the window.")
         return False
 
+    async def _looks_like_booking_page(self) -> bool:
+        """Positive check that the current page shows booking content:
+        slot rows, a date control, or a course selector."""
+        assert self.page
+        for sel in self.selectors["slot_row"]:
+            try:
+                if await self.page.locator(sel).count():
+                    return True
+            except Exception:
+                continue
+        try:
+            if await self.page.locator("input[type='date']").count():
+                return True
+        except Exception:
+            pass
+        return bool(await self._first_visible("course_select", timeout=800))
+
     def _budget_deadline(self) -> float:
         """A monotonic deadline ``selection_budget_seconds`` from now."""
         return time.monotonic() + self.config.selection_budget_seconds
+
+    async def _settle(self, timeout: int = 8000) -> None:
+        """Best-effort wait for the network to go idle. Never raises.
+
+        Used after a successful action (date set, course chosen) so a slow or
+        never-idle page (long-polling, websockets) can't make the caller think
+        the action failed and retry a different element.
+        """
+        assert self.page
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=timeout)
+        except Exception:
+            self.log.debug("networkidle wait timed out (continuing).")
 
     # ------------------------------------------------------------- date selection
     async def select_date(self) -> bool:
@@ -319,7 +463,9 @@ class TenforeBooker:
                 await date_input.fill(target.strftime("%Y-%m-%d"))
                 await date_input.dispatch_event("change")
                 self.log.info("Selected date via date input: %s", target.isoformat())
-                await self.page.wait_for_load_state("networkidle", timeout=8000)
+                # The fill succeeded — the date IS set. Don't let a slow/never-idle
+                # network make us fall through and click a different date.
+                await self._settle()
                 return True
             except Exception:
                 pass
@@ -340,11 +486,11 @@ class TenforeBooker:
                     loc = self.page.locator(sel).first
                     await loc.wait_for(state="visible", timeout=wait)
                     await loc.click()
-                    self.log.info("Selected date via %r", sel)
-                    await self.page.wait_for_load_state("networkidle", timeout=8000)
-                    return True
                 except Exception:
                     continue
+                self.log.info("Selected date via %r", sel)
+                await self._settle()
+                return True
 
         self.log.warning(
             "Could not explicitly select date %s — proceeding with whatever the "
@@ -370,11 +516,11 @@ class TenforeBooker:
                            {"label": _loose(course)}):
                 try:
                     await dropdown.select_option(**kwargs)
-                    self.log.info("Selected course %r via dropdown.", course)
-                    await self.page.wait_for_load_state("networkidle", timeout=8000)
-                    return True
                 except Exception:
                     continue
+                self.log.info("Selected course %r via dropdown.", course)
+                await self._settle()
+                return True
 
         # 2) Click a tab/link/button/option whose visible text matches the name.
         for sel in (f"[role='tab']:has-text('{course}')",
@@ -392,11 +538,11 @@ class TenforeBooker:
                 loc = self.page.locator(sel).first
                 await loc.wait_for(state="visible", timeout=wait)
                 await loc.click()
-                self.log.info("Selected course %r via %r", course, sel)
-                await self.page.wait_for_load_state("networkidle", timeout=8000)
-                return True
             except Exception:
                 continue
+            self.log.info("Selected course %r via %r", course, sel)
+            await self._settle()
+            return True
 
         self.log.warning(
             "Could not explicitly select course %r — proceeding with whatever the "
@@ -426,6 +572,7 @@ class TenforeBooker:
         """Scrape available tee times currently shown on the page."""
         assert self.page
         rows = None
+        used_selector = None
         for sel in self.selectors["slot_row"]:
             loc = self.page.locator(sel)
             try:
@@ -434,6 +581,7 @@ class TenforeBooker:
                 count = 0
             if count:
                 rows = loc
+                used_selector = sel
                 self.log.debug("Using slot selector %r (%d rows).", sel, count)
                 break
 
@@ -442,13 +590,16 @@ class TenforeBooker:
             return []
 
         slots: list[Slot] = []
-        count = await rows.count()
-        for i in range(count):
-            row = rows.nth(i)
-            try:
-                text = (await row.inner_text()).strip()
-            except Exception:
-                continue
+        # One round-trip for all row texts (indexes align with the locator's
+        # order) instead of a per-row inner_text() call — ~10x faster on big
+        # tee sheets, which matters in the booking race.
+        try:
+            texts = await rows.all_inner_texts()
+        except Exception as exc:
+            self.log.debug("all_inner_texts failed (%s); no rows readable.", exc)
+            texts = []
+        for i, text in enumerate(texts):
+            text = text.strip()
             t = _extract_time(text)
             if t is None:
                 continue
@@ -458,7 +609,8 @@ class TenforeBooker:
             if any(w in lowered for w in ("full", "unavailable", "booked", "sold out")):
                 continue
             slots.append(Slot(time=t, label=_first_time_label(text),
-                              handle_index=i, course=course))
+                              handle_index=i, course=course,
+                              selector=used_selector))
 
         slots.sort(key=lambda s: s.time)
         where = f" at {course}" if course else ""
@@ -509,7 +661,14 @@ class TenforeBooker:
         """
         assert self.page
         if slot.course:
-            await self.select_course(slot.course)
+            if not await self.select_course(slot.course) and len(self.config.courses) > 1:
+                # With multiple courses configured we must be sure we're on the
+                # right one — booking a time-matched slot on the wrong course
+                # would be worse than failing. Let the runner try the next slot.
+                self.log.error(
+                    "Could not select course %r for booking; aborting this slot so "
+                    "we don't book on the wrong course.", slot.course)
+                return False
         await self.select_date()
 
         fresh = await self.collect_slots(course=slot.course)
@@ -519,8 +678,11 @@ class TenforeBooker:
                              slot.label, f" at {slot.course}" if slot.course else "")
             return False
 
+        # Reuse the exact selector collect_slots matched, so the row index can't
+        # point into a different (broader) selector's element list.
         row = None
-        for sel in self.selectors["slot_row"]:
+        selectors = ([match.selector] if match.selector else []) + self.selectors["slot_row"]
+        for sel in selectors:
             loc = self.page.locator(sel)
             if await loc.count() > match.handle_index:
                 row = loc.nth(match.handle_index)

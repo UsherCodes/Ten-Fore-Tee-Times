@@ -28,7 +28,8 @@ from tenfore.config import (
     load_credentials,
 )
 from tenfore.logsetup import setup_logging
-from tenfore.runner import run_booking, run_check
+# run_booking/run_check are imported lazily inside the run/check handlers so
+# that `info` and `setup` don't pay the full Playwright import chain.
 from tenfore.setup_wizard import run_setup
 
 console = Console()
@@ -75,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_overrides(p: argparse.ArgumentParser) -> None:
     """CLI flags that override config.yaml at runtime."""
-    p.add_argument("--date", help="Override desired play date (e.g. 'Saturday, June 14').")
+    p.add_argument("--date", help="Override desired play date (e.g. 'next Saturday' "
+                                  "or '2026-06-14'). A named weekday must match the date.")
     p.add_argument("--time-window", dest="time_window",
                    help="Override window (e.g. 'between 7:00 AM and 9:00 AM').")
     p.add_argument("--players", type=int, help="Override number of players (1-4).")
@@ -125,7 +127,11 @@ def _print_info(config) -> None:
     table.add_row("Poll starts", f"{config.prefire_seconds}s before unlock")
     table.add_row("Now", config.now().strftime("%Y-%m-%d %H:%M:%S %Z"))
     remaining = config.unlock_datetime - config.now()
-    table.add_row("Time to unlock", str(remaining).split(".")[0])
+    if remaining.total_seconds() >= 0:
+        table.add_row("Time to unlock", str(remaining).split(".")[0])
+    else:
+        table.add_row("Time to unlock",
+                      f"[yellow]already unlocked {str(-remaining).split('.')[0]} ago[/yellow]")
     table.add_row("Login retries", f"{config.login_attempts} × {config.login_delay_seconds}s")
     table.add_row("Fallback booking", "on" if config.fallback_to_next_best else "off")
     table.add_row("Headless", "yes" if config.headless else "no")
@@ -168,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             "[bold]No reservation will be made.[/bold]",
             title="🔎  Tenfore Booker — Check", border_style="cyan",
         ))
+        from tenfore.runner import run_check
         try:
             ok = asyncio.run(run_check(config, credentials, console))
         except KeyboardInterrupt:
@@ -190,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             title="🏌️  Tenfore Tee-Time Booker", border_style="green",
         ))
 
+        from tenfore.runner import run_booking
         try:
             result = asyncio.run(
                 run_booking(config, credentials, console, skip_wait=args.now)

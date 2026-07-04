@@ -13,8 +13,12 @@ from dotenv import load_dotenv
 
 from . import timeparse
 
-DEFAULT_CONFIG_PATH = Path("config.yaml")
-DEFAULT_ENV_PATH = Path(".env")
+# Anchor defaults to the project root (the directory containing main.py), not
+# the current working directory — so running from anywhere still finds the
+# config, credentials, and writes logs/screenshots next to the project.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
 
 @dataclass
@@ -50,6 +54,8 @@ class BookingConfig:
 
     login_attempts: int
     login_delay_seconds: float
+    # Hard wall-clock cap for the whole login retry loop (seconds).
+    login_window_seconds: float
     booking_window_minutes: float
     fallback_to_next_best: bool
 
@@ -61,6 +67,10 @@ class BookingConfig:
     log_dir: Path
     screenshot_dir: Path
     base_url: str
+
+    # Where the browser session (cookies/localStorage) is persisted between
+    # runs, so `run` can start pre-authenticated after a prior `check`/`run`.
+    session_file: Path = Path(".tenfore-session.json")
 
     # Runtime-only: when True, do everything except click the final confirm.
     dry_run: bool = False
@@ -152,7 +162,13 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
     date_str = overrides.get("date") or booking.get("desired_date")
     if not date_str:
         raise ValueError("No desired_date in config and no --date provided.")
-    desired_date = timeparse.parse_date(str(date_str), today=today)
+    try:
+        desired_date = timeparse.parse_date(str(date_str), today=today)
+    except timeparse.ParseError as exc:
+        raise ValueError(
+            f"desired_date {str(date_str)!r} is invalid: {exc} "
+            "Fix it in config.yaml or re-run `python3 main.py setup`."
+        ) from exc
 
     if overrides.get("time_window"):
         window_start, window_end = timeparse.parse_time_window(overrides["time_window"])
@@ -179,13 +195,19 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
     if priority not in ("course", "time"):
         raise ValueError("priority must be 'course' (time flexible) or "
                          "'time' (location flexible).")
-    if priority == "course" and not courses:
-        # Course-priority needs a course to lock onto; warn via ValueError only
-        # if the platform genuinely has courses. We allow empty for single-course
-        # sites, so just fall through — courses_to_search() handles [None].
-        pass
+    # Empty courses is allowed for single-course sites: courses_to_search()
+    # returns [None] and the booking flow runs once against the default sheet.
 
     unlock_time = timeparse.parse_time(str(scheduling.get("unlock_time", "00:00")))
+
+    # Relative paths in config.yaml resolve against the config file's own
+    # directory, so logs/screenshots/session land with the project regardless
+    # of the CWD the command was launched from.
+    base_dir = path.resolve().parent
+
+    def _anchored(raw_path) -> Path:
+        candidate = Path(raw_path)
+        return candidate if candidate.is_absolute() else base_dir / candidate
 
     return BookingConfig(
         desired_date=desired_date,
@@ -197,20 +219,23 @@ def load_config(path: Path, overrides: dict | None = None) -> BookingConfig:
         unlock_days_before=int(scheduling.get("unlock_days_before", 8)),
         unlock_time=unlock_time,
         timezone=tz,
-        prefire_seconds=int(overrides.get("prefire_seconds")
-                            or scheduling.get("prefire_seconds", 60)),
+        prefire_seconds=int(overrides["prefire_seconds"]
+                            if "prefire_seconds" in overrides
+                            else scheduling.get("prefire_seconds", 60)),
         poll_interval_seconds=float(scheduling.get("poll_interval_seconds", 1.5)),
         selection_budget_seconds=float(scheduling.get("selection_budget_seconds", 6)),
         login_attempts=int(retry.get("login_attempts", 10)),
         login_delay_seconds=float(retry.get("login_delay_seconds", 2)),
+        login_window_seconds=float(retry.get("login_window_seconds", 90)),
         booking_window_minutes=float(retry.get("booking_window_minutes", 5)),
         fallback_to_next_best=bool(retry.get("fallback_to_next_best", True)),
         headless=_coerce_bool(overrides.get("headless"), browser.get("headless", True)),
         timeout_ms=int(browser.get("timeout_ms", 30000)),
         macos_desktop=bool(notifications.get("macos_desktop", True)),
-        log_dir=Path(paths.get("log_dir", "logs")),
-        screenshot_dir=Path(paths.get("screenshot_dir", "screenshots")),
-        base_url=str(site.get("base_url", "https://www.fox.tenfore.golf")).rstrip("/"),
+        log_dir=_anchored(paths.get("log_dir", "logs")),
+        screenshot_dir=_anchored(paths.get("screenshot_dir", "screenshots")),
+        session_file=_anchored(paths.get("session_file", ".tenfore-session.json")),
+        base_url=str(site.get("base_url", "https://fox.tenfore.golf/mcggolf")).rstrip("/"),
         dry_run=bool(overrides.get("dry_run", False)),
         raw=raw,
     )

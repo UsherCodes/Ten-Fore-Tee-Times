@@ -14,6 +14,43 @@ from . import timeparse
 from .config import DEFAULT_CONFIG_PATH, DEFAULT_ENV_PATH
 
 
+def _env_quote(value: str) -> str:
+    """Single-quote a value for a .env file so special chars round-trip.
+
+    python-dotenv treats unquoted ``#`` as a comment and is sensitive to spaces
+    and quotes. Single-quoting (with embedded single quotes escaped) makes any
+    password safe to write and read back.
+    """
+    return "'" + value.replace("'", "\\'") + "'"
+
+
+def _write_env(env_path: Path, email: str, password: str) -> None:
+    """Write credentials to a .env file with safe quoting and 600 perms."""
+    env_path.write_text(
+        f"TENFORE_EMAIL={_env_quote(email)}\n"
+        f"TENFORE_PASSWORD={_env_quote(password)}\n",
+        encoding="utf-8",
+    )
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _merged_scheduling(existing: dict, answers: dict) -> dict:
+    """Merge prompted scheduling answers over existing scheduling settings.
+
+    Starts from the existing scheduling block so knobs the wizard doesn't ask
+    about (e.g. ``selection_budget_seconds``, ``poll_interval_seconds``) are
+    preserved across re-runs instead of being silently dropped.
+    """
+    merged = dict(existing)
+    merged.update(answers)
+    merged.setdefault("poll_interval_seconds", 1.5)
+    merged.setdefault("selection_budget_seconds", 6)
+    return merged
+
+
 def run_setup(console: Console,
               config_path: Path = DEFAULT_CONFIG_PATH,
               env_path: Path = DEFAULT_ENV_PATH) -> None:
@@ -35,7 +72,7 @@ def run_setup(console: Console,
     # ---- Date ----
     while True:
         raw_date = Prompt.ask(
-            "[bold]Desired golf date[/bold] (e.g. 'Saturday, June 14' or 2026-06-14)",
+            "[bold]Desired golf date[/bold] (e.g. 'next Saturday' or 2026-06-14)",
             default=str(booking.get("desired_date", "")) or None,
         )
         try:
@@ -110,22 +147,35 @@ def run_setup(console: Console,
     timezone = Prompt.ask("[bold]Timezone[/bold] (IANA name, blank = system local)",
                           default=str(scheduling.get("timezone", "America/New_York")))
 
+    # Re-resolve the date against "today" in the chosen timezone — a relative
+    # phrase like "next Saturday" parsed near midnight could otherwise land a
+    # day off from what `run` (which uses the configured tz) would compute.
+    if timezone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz_today = dt.datetime.now(tz=ZoneInfo(timezone)).date()
+            parsed = timeparse.parse_date(raw_date, today=tz_today)
+        except Exception:
+            pass  # keep the earlier system-local parse
+
     # ---- Build config ----
     config = {
         "booking": {
-            "desired_date": raw_date,
+            # Store the resolved ISO date, not the raw phrase: a relative phrase
+            # like "next Saturday" would re-parse to a different date if `run`
+            # happens days after `setup`.
+            "desired_date": parsed.isoformat(),
             "time_window": {"start": f"{start:%H:%M}", "end": f"{end:%H:%M}"},
             "players": players,
             "courses": courses,
             "priority": priority,
         },
-        "scheduling": {
+        "scheduling": _merged_scheduling(scheduling, {
             "unlock_days_before": unlock_days,
             "unlock_time": unlock_time_str,
             "timezone": timezone,
             "prefire_seconds": int(scheduling.get("prefire_seconds", 60)),
-            "poll_interval_seconds": float(scheduling.get("poll_interval_seconds", 1.5)),
-        },
+        }),
         "retry": existing.get("retry", {
             "login_attempts": 10,
             "login_delay_seconds": 2,
@@ -135,7 +185,7 @@ def run_setup(console: Console,
         "browser": existing.get("browser", {"headless": True, "timeout_ms": 30000}),
         "notifications": existing.get("notifications", {"macos_desktop": True}),
         "paths": existing.get("paths", {"log_dir": "logs", "screenshot_dir": "screenshots"}),
-        "site": existing.get("site", {"base_url": "https://www.fox.tenfore.golf"}),
+        "site": existing.get("site", {"base_url": "https://fox.tenfore.golf/mcggolf"}),
     }
 
     with config_path.open("w") as fh:
@@ -156,13 +206,7 @@ def run_setup(console: Console,
     if Confirm.ask("\n[bold]Store Tenfore credentials in .env now?[/bold]", default=True):
         email = Prompt.ask("  Tenfore email")
         password = Prompt.ask("  Tenfore password", password=True)
-        env_path.write_text(
-            f"TENFORE_EMAIL={email}\nTENFORE_PASSWORD={password}\n", encoding="utf-8"
-        )
-        try:
-            env_path.chmod(0o600)
-        except OSError:
-            pass
+        _write_env(env_path, email, password)
         console.print(f"[green]✓[/green] Wrote {env_path} (permissions 600, gitignored)")
     else:
         console.print("[yellow]Skipped credentials. Create .env from .env.example "

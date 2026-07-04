@@ -1,4 +1,7 @@
-playwright>=1.44.0
-python-dotenv>=1.0.0
-PyYAML>=6.0.1
-rich>=13.7.0
+# Runtime dependencies — pinned to the tested compatible range.
+# (~= allows patch/minor updates within the tested series; playwright is pinned
+# tightest because its API and browser-build coupling break most often.)
+playwright~=1.60.0
+python-dotenv~=1.2
+PyYAML~=6.0
+rich~=15.0
