@@ -67,7 +67,7 @@ DEFAULT_SELECTORS: dict[str, list[str]] = {
     # Custom date pickers (Vue/React chip widgets): the chip/button that OPENS
     # the calendar popup, and the popup's next-month arrow.
     "date_opener": [
-        "[class*='date-button']", "button:has([class*='date-button'])",
+        "button:has([class*='date-button'])", "[class*='date-button']",
         "button:has(.fa-calendar-days)", "[class*='datepicker-toggle']",
     ],
     "date_next_month": [
@@ -507,10 +507,13 @@ class TenforeBooker:
         if opener:
             try:
                 await opener.click()
-                await asyncio.sleep(0.35)  # let the popup render
+                await asyncio.sleep(0.7)  # let the popup render (SPA animation)
+                self.log.info("Date picker: opener clicked, searching for day cell %s",
+                              target.isoformat())
                 for month_hop in range(2):  # retry once after next-month nav
                     day_cell = None
-                    for sel in (f"[id='{target.isoformat()}']",
+                    for sel in (f"[id='{target.isoformat()}'] [class*='cell_inner']",
+                                f"[id='{target.isoformat()}']",
                                 f"[class*='calendar_item']:has(:text-is('{target.day}'))",
                                 f"[class*='calendar'] :text-is('{target.day}')",
                                 f"[class*='picker'] :text-is('{target.day}')",
@@ -530,12 +533,19 @@ class TenforeBooker:
                         except Exception:
                             continue
                     if day_cell:
+                        self.log.info("Date picker: clicking day cell (%r matched).",
+                                      sel)
                         await day_cell.click()
                         await self._settle(3000)
                         if await self._date_chip_matches(target):
                             self.log.info("Selected date via picker popup: %s",
                                           target.isoformat())
                             return True
+                        self.log.info("Date picker: chip did not verify after "
+                                      "day-cell click.")
+                    else:
+                        self.log.info("Date picker: no day cell matched "
+                                      "(month hop %d).", month_hop)
                     if month_hop == 0 and _remaining_ms(deadline, cap=1) > 0:
                         nxt = await self._first_visible(
                             "date_next_month",
@@ -544,7 +554,12 @@ class TenforeBooker:
                             break
                         await nxt.click()
                         await asyncio.sleep(0.25)
-                self.log.debug("Picker popup flow did not verify the target date.")
+                self.log.warning("Date picker flow could not verify %s — saving "
+                                 "diagnostic screenshot.", target.isoformat())
+                try:
+                    await self.screenshot("date-picker-fail")
+                except Exception:
+                    pass
                 await self.page.keyboard.press("Escape")  # close a stray popup
             except Exception as exc:
                 self.log.debug("Picker popup flow failed: %s", exc)
