@@ -683,7 +683,21 @@ class TenforeBooker:
             if course:
                 await self.select_course(course)
             await self.select_date()
-            combined.extend(await self.collect_slots(course=course))
+            found = await self.collect_slots(course=course)
+            # SPA result cards can render a beat after date/course changes.
+            for _ in range(3):
+                if found:
+                    break
+                await asyncio.sleep(1.0)
+                found = await self.collect_slots(course=course)
+            if not found and course:
+                # A chip that was already active would have been toggled OFF
+                # by select_course — flip it back once and re-look.
+                self.log.info("0 slots after selecting %r — re-toggling once.", course)
+                await self.select_course(course)
+                await asyncio.sleep(1.0)
+                found = await self.collect_slots(course=course)
+            combined.extend(found)
         combined.sort(key=lambda s: s.time)
         return combined
 

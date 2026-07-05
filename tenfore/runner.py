@@ -232,7 +232,22 @@ async def run_check(config: BookingConfig,
                     d_ok = await booker.select_date()
                     record(f"Select date @ {label}", d_ok,
                            "" if d_ok else "page may already default to it")
+                    # SPAs render result cards a beat after the date changes —
+                    # poll briefly instead of a single immediate look, and if a
+                    # course chip was clicked, try re-toggling it once (a chip
+                    # that was already active would have been switched OFF).
                     slots = await booker.collect_slots(course=course)
+                    for _ in range(4):
+                        if slots:
+                            break
+                        await asyncio.sleep(1.5)
+                        slots = await booker.collect_slots(course=course)
+                    if not slots and course:
+                        log.info("0 slots after chip click — re-toggling %r once.",
+                                 course)
+                        await booker.select_course(course)
+                        await asyncio.sleep(1.5)
+                        slots = await booker.collect_slots(course=course)
                     in_win = [s for s in slots if config.window_contains(s.time)]
                     slot_ok = len(slots) > 0
                     if slots:
