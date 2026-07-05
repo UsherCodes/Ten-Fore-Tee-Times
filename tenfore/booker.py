@@ -619,8 +619,12 @@ class TenforeBooker:
         assert self.page
         deadline = self._budget_deadline()
 
+        # Collapse internal whitespace: a config typo like "Falls  Road" must
+        # still match the chip labelled "Falls Road Golf Course".
+        course = " ".join(course.split())
+
         # 1) A <select> course dropdown is the most reliable.
-        wait = _remaining_ms(deadline, cap=2000)
+        wait = _remaining_ms(deadline, cap=1200)
         dropdown = await self._first_visible("course_select", timeout=wait) if wait else None
         if dropdown:
             for kwargs in ({"label": course},
@@ -635,11 +639,13 @@ class TenforeBooker:
                 return True
 
         # 2) Click a tab/link/button/option whose visible text matches the name.
-        for sel in (f"[role='tab']:has-text('{course}')",
+        # Forgiving substring matchers first: chips usually carry a longer
+        # label ("Falls Road Golf Course") than the configured name.
+        for sel in (f"button:has-text('{course}')",
+                    f"[role='tab']:has-text('{course}')",
+                    f"a:has-text('{course}')",
                     f"button:text-is('{course}')",
                     f"text=\"{course}\"",
-                    f"a:has-text('{course}')",
-                    f"button:has-text('{course}')",
                     f"li:has-text('{course}')",
                     f"option:has-text('{course}')"):
             wait = _remaining_ms(deadline, cap=1000)
@@ -717,15 +723,17 @@ class TenforeBooker:
         # course's rows — otherwise a stray toggled filter chip could surface
         # (and book) another course's time.
         course_filter = None
-        if course and any(course.lower() in t.lower() for t in texts):
-            course_filter = course.lower()
+        course_norm = " ".join(course.split()).lower() if course else None
+        if course_norm and any(course_norm in " ".join(t.split()).lower()
+                               for t in texts):
+            course_filter = course_norm
 
         for i, text in enumerate(texts):
             text = text.strip()
             t = _extract_time(text)
             if t is None:
                 continue
-            if course_filter and course_filter not in text.lower():
+            if course_filter and course_filter not in " ".join(text.split()).lower():
                 continue
             # Only treat it as bookable if it appears to offer a book action and
             # is not marked unavailable/full.
@@ -868,7 +876,13 @@ class TenforeBooker:
         self.config.screenshot_dir.mkdir(parents=True, exist_ok=True)
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         path = self.config.screenshot_dir / f"{name}-{stamp}.png"
-        await self.page.screenshot(path=str(path), full_page=True)
+        try:
+            await self.page.screenshot(path=str(path), full_page=True,
+                                       timeout=10000)
+        except Exception:
+            # Full-page capture can hang on animated SPAs — a viewport shot
+            # is far better than an error.
+            await self.page.screenshot(path=str(path), timeout=10000)
         self.log.info("Saved screenshot -> %s", path)
         return path
 
