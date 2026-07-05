@@ -366,7 +366,7 @@ class TenforeBooker:
         /tee-time/search. Configurable via site.search_path ("" disables it).
         """
         site = self.config.raw.get("site", {}) or {}
-        path = site.get("search_path", "/tee-time/search")
+        path = site.get("search_path", "/courses")
         if not path:
             return None
         parts = urlsplit(self.config.base_url)
@@ -470,7 +470,10 @@ class TenforeBooker:
             course = self.config.primary_course
             if course:
                 norm = " ".join(course.split())
-                if await self.page.locator(f"button:has-text('{norm}')").count():
+                # Any element carrying the course name counts — covers course
+                # chips, buttons, links, AND picker cards (a div listing the
+                # course), so the /courses picker is recognized too.
+                if await self.page.get_by_text(norm, exact=False).count():
                     return True
         except Exception:
             pass
@@ -683,37 +686,53 @@ class TenforeBooker:
                 return True
 
         # 2) Click a tab/link/button/option whose visible text matches the name.
-        # Forgiving substring matchers first: chips usually carry a longer
-        # label ("Falls Road Golf Course") than the configured name.
-        for sel in (f"button:has-text('{course}')",
-                    f"[role='tab']:has-text('{course}')",
-                    f"a:has-text('{course}')",
-                    f"button:text-is('{course}')",
-                    f"text=\"{course}\"",
-                    f"li:has-text('{course}')",
-                    f"option:has-text('{course}')"):
-            wait = _remaining_ms(deadline, cap=1000)
-            if not wait:
-                self.log.warning(
-                    "Course-selection budget (%.0fs) exhausted before matching %r.",
-                    self.config.selection_budget_seconds, course)
-                return False
-            try:
-                loc = self.page.locator(sel).first
-                await loc.wait_for(state="visible", timeout=wait)
-                await loc.click()
-            except Exception:
-                continue
-            self.log.info("Selected course %r via %r", course, sel)
-            await self._settle()
-            return True
-
-        self.log.warning(
-            "Could not explicitly select course %r — proceeding with whatever the "
-            "page currently shows. Add a 'course_select' override in config.yaml "
-            "if this course is being missed.", course
-        )
-        return False
+        # Forgiving substring matchers first: chips/cards usually carry a longer
+        # label ("Falls Road Golf Course") than the configured name. On a
+        # course-PICKER page each course is a clickable card/link that navigates
+        # to that course's tee sheet, so cards/links are included as targets.
+        candidates = (f"a:has-text('{course}')",
+                      f"button:has-text('{course}')",
+                      f"[role='tab']:has-text('{course}')",
+                      f"button:text-is('{course}')",
+                      f"[class*='card']:has-text('{course}')",
+                      f"[class*='course']:has-text('{course}')",
+                      f"li:has-text('{course}')",
+                      f"text=\"{course}\"",
+                      f"option:has-text('{course}')")
+        # Retry the whole candidate set until the budget expires (covers SPA
+        # render lag), but probe each candidate with count() — instant — rather
+        # than a per-selector visibility wait that would burn ~1s on every miss
+        # and exhaust the budget before reaching a later matching selector.
+        matched = None
+        while _remaining_ms(deadline, cap=1) > 0 and matched is None:
+            for sel in candidates:
+                try:
+                    if await self.page.locator(sel).count():
+                        matched = sel
+                        break
+                except Exception:
+                    continue
+            if matched is None:
+                await asyncio.sleep(0.25)
+        if matched is None:
+            self.log.warning(
+                "Course-selection budget (%.0fs) exhausted before matching %r.",
+                self.config.selection_budget_seconds, course)
+            return False
+        sel = matched
+        try:
+            loc = self.page.locator(sel).first
+            url_before = self.page.url
+            await loc.click()
+        except Exception as exc:
+            self.log.warning("Course %r matched %r but click failed: %s",
+                             course, sel, exc)
+            return False
+        self.log.info("Selected course %r via %r", course, sel)
+        await self._settle()
+        if self.page.url != url_before:
+            self.log.info("Course click navigated to %s", self.page.url)
+        return True
 
     async def gather_slots(self, courses: list[str | None]) -> list[Slot]:
         """Select the date for each course in turn and collect all open slots.
