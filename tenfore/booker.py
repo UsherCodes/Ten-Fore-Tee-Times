@@ -701,10 +701,31 @@ class TenforeBooker:
         combined.sort(key=lambda s: s.time)
         return combined
 
+    async def _wait_loading_settled(self, timeout_ms: int = 10000) -> None:
+        """If the page shows a loading indicator, wait for it to disappear.
+
+        SPAs fetch results after a filter change; collecting while the
+        spinner is up reads an empty grid. No-op when no indicator exists.
+        """
+        assert self.page
+        # NB: text= and CSS engines cannot be comma-combined in one selector.
+        for sel in ("text=/^Loading/i", "[class*='loading' i]",
+                    "[class*='spinner' i]"):
+            try:
+                loc = self.page.locator(sel).first
+                if await loc.is_visible():
+                    self.log.info("Results still loading (%r) — waiting for "
+                                  "the indicator to clear.", sel)
+                    await loc.wait_for(state="hidden", timeout=timeout_ms)
+                    break
+            except Exception as exc:
+                self.log.debug("Loading-settle wait ended (%r): %s", sel, exc)
+
     # ------------------------------------------------------------- slot scraping
     async def collect_slots(self, course: str | None = None) -> list[Slot]:
         """Scrape available tee times currently shown on the page."""
         assert self.page
+        await self._wait_loading_settled()
         rows = None
         used_selector = None
         for sel in self.selectors["slot_row"]:
