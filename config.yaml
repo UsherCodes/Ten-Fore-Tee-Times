@@ -96,4 +96,4 @@ site:
   # The login/tenant page above often isn't where tee-time RESULTS render.
   # After login the tool navigates to this origin-level results route. Set to
   # "" to disable and search on base_url instead.
-  search_path: "/tee-time/search"
+  search_path: "/courses"
