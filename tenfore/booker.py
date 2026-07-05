@@ -16,6 +16,7 @@ import datetime as dt
 import os
 import re
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -357,6 +358,22 @@ class TenforeBooker:
         return False
 
     # ------------------------------------------------------ booking page access
+    def _search_url(self) -> str | None:
+        """Absolute URL of the tee-time RESULTS route.
+
+        The login/tenant page (base_url, e.g. .../mcggolf) is often NOT where
+        the result cards render — those live at an origin-level route like
+        /tee-time/search. Configurable via site.search_path ("" disables it).
+        """
+        site = self.config.raw.get("site", {}) or {}
+        path = site.get("search_path", "/tee-time/search")
+        if not path:
+            return None
+        parts = urlsplit(self.config.base_url)
+        if not parts.scheme or not parts.netloc:
+            return None
+        return f"{parts.scheme}://{parts.netloc}{path}"
+
     async def open_booking_page(self, minutes: float | None = None) -> bool:
         """Navigate to the tee-time booking page.
 
@@ -367,6 +384,19 @@ class TenforeBooker:
         assert self.page
         window = self.config.booking_window_minutes if minutes is None else minutes
         deadline = self.config.now() + dt.timedelta(minutes=window)
+
+        # The current page (post-login landing / tenant page) may look bookable
+        # but not render results — navigate to the dedicated search route first.
+        search_url = self._search_url()
+        if search_url:
+            try:
+                self.log.info("Navigating to results route: %s", search_url)
+                await self._goto(search_url)
+                await self._settle(5000)
+            except Exception as exc:
+                self.log.info("Could not open results route %s (%s) — falling "
+                              "back to on-page navigation.", search_url, exc)
+
         attempt = 0
         while self.config.now() < deadline:
             attempt += 1
@@ -430,7 +460,21 @@ class TenforeBooker:
                 return True
         except Exception:
             pass
-        return bool(await self._first_visible("course_select", timeout=800))
+        if await self._first_visible("course_select", timeout=600):
+            return True
+        # The search widget's date chip / course chips also count as booking
+        # content (SPA result pages render cards only after a date is picked).
+        if await self._first_visible("date_opener", timeout=600):
+            return True
+        try:
+            course = self.config.primary_course
+            if course:
+                norm = " ".join(course.split())
+                if await self.page.locator(f"button:has-text('{norm}')").count():
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _budget_deadline(self) -> float:
         """A monotonic deadline ``selection_budget_seconds`` from now."""
